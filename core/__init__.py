@@ -1,0 +1,1 @@
+# Smart Supervise - core package

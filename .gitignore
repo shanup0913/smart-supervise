@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pth
+!models/yolov8n.pt
+alerts/
+reports/
+*.avi
+*.mp4
+.venv/
+venv/
+.env
+runs/

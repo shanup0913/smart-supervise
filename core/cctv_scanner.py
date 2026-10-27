@@ -94,8 +94,8 @@ class CCTVScanner:
         cv2.putText(annotated_frame, osd_text, (osd_x1 + 6, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 255) if video_time_str else (0, 255, 0), 1)
 
-        # Run YOLO detection (classes 0=person, 15=cat, 16=dog, etc.)
-        results = self.model(frame, verbose=False, conf=0.35)[0]
+        # Run YOLO detection with high sensitivity (classes 0=person, 15=cat, 16=dog, etc.)
+        results = self.model(frame, verbose=False, conf=0.25)[0]
         
         for box in results.boxes:
             cls_id = int(box.cls[0].item())

@@ -147,6 +147,16 @@ class SmartSuperviseApp(ctk.CTk):
         panel = ctk.CTkScrollableFrame(parent, fg_color=PANEL_BG, corner_radius=12, width=285)
         panel.grid(row=0, column=0, padx=(0, 6), pady=0, sticky="nsew")
 
+        # High-responsiveness smooth mouse wheel scrolling
+        def _smooth_scroll(event):
+            try:
+                panel._parent_canvas.yview_scroll(int(-1 * (event.delta / 30)), "units")
+                return "break"
+            except Exception:
+                pass
+        panel._parent_canvas.bind("<MouseWheel>", _smooth_scroll)
+        panel.bind("<MouseWheel>", _smooth_scroll)
+
         ctk.CTkLabel(
             panel, text="TARGET & CAMERAS SETUP",
             font=ctk.CTkFont(size=12, weight="bold"),

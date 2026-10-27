@@ -71,10 +71,10 @@ class CCTVScanner:
         self.sightings_history.clear()
         return True
 
-    def process_frame(self, frame, camera_name="Camera 1"):
+    def process_frame(self, frame, camera_name="Camera 1", video_time_str=None):
         """
-        Analyzes a single video frame with YOLO + Matcher.
-        Returns annotated frame with bounding boxes and alert status.
+        Analyzes a single video frame with YOLO + Biometric Matcher.
+        Returns annotated frame with bounding boxes, alert status, and burned-in timestamps.
         """
         if frame is None:
             return None, False
@@ -83,6 +83,16 @@ class CCTVScanner:
         h, w = frame.shape[:2]
         target_spotted_in_frame = False
         best_match_info = None
+
+        # Burn-in OSD Timestamp badge in top-right corner
+        now_clock = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        osd_text = f"⏱ [{video_time_str}]  {now_clock}" if video_time_str else f"REC ● {now_clock}"
+        osd_size = cv2.getTextSize(osd_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+        osd_x1 = max(0, w - osd_size[0] - 16)
+        cv2.rectangle(annotated_frame, (osd_x1, 8), (w - 6, 28), (15, 15, 25), -1)
+        cv2.rectangle(annotated_frame, (osd_x1, 8), (w - 6, 28), (60, 60, 90), 1)
+        cv2.putText(annotated_frame, osd_text, (osd_x1 + 6, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 255) if video_time_str else (0, 255, 0), 1)
 
         # Run YOLO detection (classes 0=person, 15=cat, 16=dog, etc.)
         results = self.model(frame, verbose=False, conf=0.35)[0]
@@ -109,18 +119,20 @@ class CCTVScanner:
                     target_spotted_in_frame = True
                     # Bright Green Box for Found Target
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
-                    label = f"TARGET FOUND: {self.matcher.target_name} ({int(similarity*100)}%)"
+                    time_badge = f" [{video_time_str}]" if video_time_str else ""
+                    label = f"TARGET FOUND: {self.matcher.target_name} ({int(similarity*100)}%){time_badge}"
                     
                     # Label banner
-                    cv2.rectangle(annotated_frame, (x1, max(0, y1 - 28)), (x1 + len(label) * 11, y1), (0, 200, 0), -1)
+                    cv2.rectangle(annotated_frame, (x1, max(0, y1 - 28)), (x1 + len(label) * 10, y1), (0, 200, 0), -1)
                     cv2.putText(annotated_frame, label, (x1 + 5, y1 - 8), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 2)
                     
                     best_match_info = {
                         "confidence": similarity,
                         "crop": crop,
                         "bbox": (x1, y1, x2, y2),
-                        "target_name": self.matcher.target_name
+                        "target_name": self.matcher.target_name,
+                        "video_time": video_time_str
                     }
                 else:
                     # Clear Mismatch Indicator showing exact similarity score
@@ -148,7 +160,8 @@ class CCTVScanner:
                     "confidence": conf,
                     "crop": crop,
                     "bbox": (x1, y1, x2, y2),
-                    "target_name": f"{cls_name.capitalize()} Intrusion"
+                    "target_name": f"{cls_name.capitalize()} Intrusion",
+                    "video_time": video_time_str
                 }
 
         # Update Last Known Location if target was spotted
@@ -157,20 +170,30 @@ class CCTVScanner:
             self.last_sighting["found"] = True
             self.last_sighting["camera_name"] = camera_name
             self.last_sighting["timestamp"] = now_str
+            self.last_sighting["video_time"] = video_time_str or ""
             self.last_sighting["confidence"] = best_match_info["confidence"]
             self.last_sighting["snapshot"] = best_match_info["crop"]
             self.last_sighting["bbox"] = best_match_info["bbox"]
             self.last_sighting["target_name"] = best_match_info["target_name"]
             
-            # Save sighting log entry (throttle: only log once every 2 seconds)
+            # Save sighting snapshot with burned-in timestamp
             if not self.sightings_history or (time.time() - self.sightings_history[-1].get("time_epoch", 0)) > 2.0:
-                snapshot_filename = f"sighting_{int(time.time())}.jpg"
+                stamp_clean = (video_time_str or "").replace(":", "-")
+                snapshot_filename = f"sighting_{int(time.time())}_{stamp_clean}.jpg"
                 snapshot_path = os.path.join(self.alerts_dir, snapshot_filename)
-                cv2.imwrite(snapshot_path, best_match_info["crop"])
+                
+                # Burn timestamp into snapshot crop
+                snap_img = best_match_info["crop"].copy()
+                snap_h = snap_img.shape[0]
+                snap_label = f"{camera_name} | {video_time_str or now_str}"
+                cv2.rectangle(snap_img, (0, max(0, snap_h - 20)), (snap_img.shape[1], snap_h), (0, 0, 0), -1)
+                cv2.putText(snap_img, snap_label, (4, snap_h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+                cv2.imwrite(snapshot_path, snap_img)
                 
                 entry = {
                     "camera": camera_name,
                     "timestamp": now_str,
+                    "video_time": video_time_str or "",
                     "confidence": round(best_match_info["confidence"], 2),
                     "snapshot_file": snapshot_path,
                     "time_epoch": time.time()
@@ -178,30 +201,38 @@ class CCTVScanner:
                 self.sightings_history.append(entry)
 
         # Overlay status bar at bottom of frame
-        self._draw_status_overlay(annotated_frame, target_spotted_in_frame, camera_name)
+        self._draw_status_overlay(annotated_frame, target_spotted_in_frame, camera_name, video_time_str)
         return annotated_frame, target_spotted_in_frame
 
-    def _draw_status_overlay(self, frame, spotted_now, camera_name):
-        """Draws a sleek status banner showing current camera & Last Known Location."""
+    def _draw_status_overlay(self, frame, spotted_now, camera_name, video_time_str=None):
+        """Draws a sleek status banner showing current camera, video timestamp & Last Known Location."""
         h, w = frame.shape[:2]
-        banner_h = 42
+        banner_h = 40
         
         # Bottom banner background
         overlay = frame.copy()
-        cv2.rectangle(overlay, (0, h - banner_h), (w, h), (25, 25, 25), -1)
-        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+        cv2.rectangle(overlay, (0, h - banner_h), (w, h), (20, 20, 30), -1)
+        cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
         
-        # Camera tag (Left)
-        cv2.putText(frame, f"CAM: {camera_name}", (12, h - 14), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        # Camera tag + Video Timestamp (Left)
+        cam_tag = f"CAM: {camera_name}"
+        if video_time_str:
+            cam_tag += f"  [{video_time_str}]"
+        cv2.putText(frame, cam_tag, (10, h - 14), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1)
         
         # Last Known Location tag (Right)
         if self.last_sighting["found"]:
-            status_text = f"LAST SEEN: {self.last_sighting['camera_name']} @ {self.last_sighting['timestamp']}"
-            tag_color = (0, 255, 0) if spotted_now else (0, 180, 255)
+            vt_info = f" [{self.last_sighting.get('video_time', '')}]" if self.last_sighting.get('video_time') else ""
+            status_text = f"LAST SEEN: {self.last_sighting['camera_name']}{vt_info}"
+            tag_color = (0, 255, 0) if spotted_now else (0, 200, 255)
         else:
-            status_text = "SEARCHING FOR TARGET..."
+            status_text = "SCANNING..."
             tag_color = (180, 180, 180)
+
+        text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)[0]
+        cv2.putText(frame, status_text, (max(10, w - text_size[0] - 12), h - 14), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, tag_color, 1)
 
         text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
         cv2.putText(frame, status_text, (w - text_size[0] - 15, h - 14), 

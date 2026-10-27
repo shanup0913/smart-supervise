@@ -123,10 +123,15 @@ class CCTVScanner:
                         "target_name": self.matcher.target_name
                     }
                 else:
-                    # Subtle blue box for non-matching pedestrians
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (200, 100, 0), 1)
-                    cv2.putText(annotated_frame, f"Person", (x1 + 3, y1 - 5), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 150, 50), 1)
+                    # Clear Mismatch Indicator showing exact similarity score
+                    match_pct = int(similarity * 100)
+                    label = f"MISMATCH ({match_pct}%)"
+                    box_color = (40, 50, 210)  # Distinct Red/Orange for mismatch
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, 2)
+                    text_w = len(label) * 9 + 8
+                    cv2.rectangle(annotated_frame, (x1, max(0, y1 - 22)), (x1 + text_w, y1), box_color, -1)
+                    cv2.putText(annotated_frame, label, (x1 + 4, y1 - 6), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
             # Case B: Animal Intrusion / Specific Class Detection (e.g. Dog in school)
             elif self.tracking_mode == "class_alert" and cls_name == self.target_class_name:

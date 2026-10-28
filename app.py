@@ -580,6 +580,7 @@ class SmartSuperviseApp(ctk.CTk):
         for path in paths:
             img_bgr = cv2.imread(path)
             if img_bgr is not None:
+                self.target_photo = img_bgr
                 self.scanner.add_person_photo(img_bgr)
         
         self.scanner.last_sighting["found"] = False
@@ -597,10 +598,12 @@ class SmartSuperviseApp(ctk.CTk):
             return
         img_bgr = cv2.imread(path)
         if img_bgr is not None:
+            self.target_photo = img_bgr
             self.scanner.add_person_photo(img_bgr)
             self._refresh_gallery_display()
 
     def _clear_target_gallery(self):
+        self.target_photo = None
         self.scanner.matcher.clear_target()
         self._refresh_gallery_display()
         self._set_status("Target gallery cleared.", color=TEXT_DIM)
@@ -663,9 +666,14 @@ class SmartSuperviseApp(ctk.CTk):
                 cam["location_var"].set(f"Camera {slot_idx+1} ({clean_name})")
 
     def _start_scanning(self):
-        if self.tracking_mode.get() == "person" and self.target_photo is None:
-            messagebox.showwarning("No Target", "Please upload a target photo first!")
-            return
+        if self.tracking_mode.get() == "person":
+            has_profiles = len(self.scanner.matcher.target_profiles) > 0
+            if not has_profiles and self.target_photo is None:
+                messagebox.showwarning("No Target", "Please upload at least one target photo first!")
+                return
+            name = self.target_name_var.get().strip() or "Target Person"
+            self.scanner.matcher.target_name = name
+            self.tracker.set_target(name)
 
         if self.tracking_mode.get() == "class":
             class_name = self.class_name_var.get().strip() or "dog"

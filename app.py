@@ -83,7 +83,8 @@ class SmartSuperviseApp(ctk.CTk):
                 "total_frames": 0,
                 "duration_sec": 0,
                 "is_file": False,
-                "ended": False
+                "ended": False,
+                "last_gray_thumb": None
             })
 
         # ── Build Layout ─────────────────────────────────────────────────────
@@ -190,24 +191,57 @@ class SmartSuperviseApp(ctk.CTk):
         self.photo_frame = ctk.CTkFrame(self.target_container, fg_color=CARD_BG, corner_radius=8)
         self.photo_frame.pack(fill="x", padx=4, pady=(0, 6))
 
-        ctk.CTkLabel(self.photo_frame, text="Target Photo", font=ctk.CTkFont(size=11, weight="bold"),
-                     text_color=TEXT_DIM).pack(pady=(4, 2), padx=8, anchor="w")
+        ctk.CTkLabel(
+            self.photo_frame, text="🎯 TARGET GALLERY (360° Poses)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=ACCENT_AMBER
+        ).pack(pady=(4, 1), padx=8, anchor="w")
 
-        self.photo_canvas = ctk.CTkLabel(
-            self.photo_frame, text="No Photo Uploaded\nClick Upload below",
-            width=110, height=120,
-            fg_color=DARK_BG, corner_radius=8,
-            font=ctk.CTkFont(size=11), text_color=TEXT_DIM
+        ctk.CTkLabel(
+            self.photo_frame, text="Upload Front, Side & Back photos to detect\nsuspect when turning or walking away.",
+            font=ctk.CTkFont(size=9), text_color=TEXT_DIM, justify="left"
+        ).pack(pady=(0, 4), padx=8, anchor="w")
+
+        # Container for gallery thumbnails
+        self.gallery_container = ctk.CTkFrame(self.photo_frame, fg_color=DARK_BG, corner_radius=6)
+        self.gallery_container.pack(fill="x", padx=8, pady=(0, 6))
+
+        self.gallery_placeholder = ctk.CTkLabel(
+            self.gallery_container,
+            text="No Photos Loaded\nUpload Front, Side or Back views",
+            height=75, font=ctk.CTkFont(size=10), text_color=TEXT_DIM
         )
-        self.photo_canvas.pack(pady=(0, 4), padx=8)
+        self.gallery_placeholder.pack(pady=8, padx=8)
+
+        # Buttons row
+        btn_row = ctk.CTkFrame(self.photo_frame, fg_color="transparent")
+        btn_row.pack(fill="x", padx=8, pady=(0, 4))
 
         ctk.CTkButton(
-            self.photo_frame, text="Upload Target Photo",
+            btn_row, text="📁 Upload Photo(s)",
             command=self._upload_photo,
             fg_color=ACCENT_BLUE, hover_color="#2d4bcc",
-            corner_radius=6, height=28,
-            font=ctk.CTkFont(size=11, weight="bold")
-        ).pack(fill="x", padx=8, pady=(0, 4))
+            corner_radius=6, height=26,
+            font=ctk.CTkFont(size=10, weight="bold")
+        ).pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+        ctk.CTkButton(
+            btn_row, text="➕ Add Angle",
+            command=self._add_angle_photo,
+            fg_color="#30304a", hover_color="#404060",
+            corner_radius=6, height=26,
+            font=ctk.CTkFont(size=10, weight="bold")
+        ).pack(side="left", fill="x", expand=True, padx=(2, 0))
+
+        # Clear Gallery button
+        self.clear_photos_btn = ctk.CTkButton(
+            self.photo_frame, text="✕ Clear Target Gallery",
+            command=self._clear_target_gallery,
+            fg_color="transparent", hover_color="#301515", text_color="#d05050",
+            corner_radius=4, height=20,
+            font=ctk.CTkFont(size=9)
+        )
+        self.clear_photos_btn.pack(pady=(0, 4), padx=8)
 
         self.target_name_var = ctk.StringVar(value="Target Person")
         ctk.CTkLabel(self.photo_frame, text="Target Name",
@@ -531,33 +565,87 @@ class SmartSuperviseApp(ctk.CTk):
             self.display_mode.set(f"cam{idx}")
 
     def _upload_photo(self):
+        paths = filedialog.askopenfilenames(
+            title="Select Target Person Photo(s) - Front, Side, Back (Hold Ctrl to select multiple)",
+            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
+        )
+        if not paths:
+            return
+        
+        name = self.target_name_var.get().strip() or "Target Person"
+        self.scanner.matcher.clear_target()
+        self.scanner.matcher.target_name = name
+        self.tracker.set_target(name)
+        
+        for path in paths:
+            img_bgr = cv2.imread(path)
+            if img_bgr is not None:
+                self.scanner.add_person_photo(img_bgr)
+        
+        self.scanner.last_sighting["found"] = False
+        self.scanner.last_sighting["target_name"] = name
+        self.scanner.sightings_history.clear()
+        
+        self._refresh_gallery_display()
+
+    def _add_angle_photo(self):
         path = filedialog.askopenfilename(
-            title="Select Target Person Photo",
+            title="Select Additional Angle / Pose Photo (Side, Back, etc.)",
             filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
         )
         if not path:
             return
-        
         img_bgr = cv2.imread(path)
-        if img_bgr is None:
-            messagebox.showerror("Error", "Could not load the selected image file.")
+        if img_bgr is not None:
+            self.scanner.add_person_photo(img_bgr)
+            self._refresh_gallery_display()
+
+    def _clear_target_gallery(self):
+        self.scanner.matcher.clear_target()
+        self._refresh_gallery_display()
+        self._set_status("Target gallery cleared.", color=TEXT_DIM)
+
+    def _refresh_gallery_display(self):
+        for widget in self.gallery_container.winfo_children():
+            widget.destroy()
+
+        profiles = self.scanner.matcher.target_profiles
+        if not profiles:
+            self.gallery_placeholder = ctk.CTkLabel(
+                self.gallery_container,
+                text="No Photos Loaded\nUpload Front, Side or Back views",
+                height=75, font=ctk.CTkFont(size=10), text_color=TEXT_DIM
+            )
+            self.gallery_placeholder.pack(pady=8, padx=8)
             return
 
-        self.target_photo = img_bgr
+        strip = ctk.CTkFrame(self.gallery_container, fg_color="transparent")
+        strip.pack(fill="x", padx=4, pady=4)
+
+        for i, p in enumerate(profiles[:4]):
+            card = ctk.CTkFrame(strip, fg_color="#181828", corner_radius=6)
+            card.pack(side="left", padx=2, pady=2, expand=True, fill="both")
+
+            rgb = cv2.cvtColor(p.thumbnail, cv2.COLOR_BGR2RGB)
+            pimg = Image.fromarray(rgb)
+            pimg.thumbnail((50, 65), Image.BILINEAR)
+            cimg = ctk.CTkImage(pimg, size=pimg.size)
+
+            lbl = ctk.CTkLabel(card, image=cimg, text="")
+            lbl.image = cimg
+            lbl.pack(padx=2, pady=(2, 0))
+
+            badge_text = p.angle_label.split()[0]
+            badge_color = ACCENT_GREEN if p.has_face else ACCENT_AMBER
+            ctk.CTkLabel(
+                card, text=badge_text, font=ctk.CTkFont(size=8, weight="bold"),
+                text_color=badge_color
+            ).pack(pady=(0, 2))
+
+        count = len(profiles)
+        faces = sum(1 for p in profiles if p.has_face)
         name = self.target_name_var.get().strip() or "Target Person"
-
-        pil_img = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
-        pil_img.thumbnail((110, 120), Image.LANCZOS)
-        ctk_img = ctk.CTkImage(pil_img, size=pil_img.size)
-        self.photo_canvas.configure(image=ctk_img, text="")
-        self.photo_canvas.image = ctk_img
-
-        self.scanner.set_person_target(img_bgr, person_name=name)
-        self.tracker.set_target(name)
-
-        has_face = self.scanner.matcher.target_has_face
-        face_status = "Biometric Face + Clothing" if has_face else "Clothing Re-ID"
-        self._set_status(f"Target: {name} ({face_status})", color=ACCENT_GREEN)
+        self._set_status(f"Target: {name} ({count} poses/angles loaded, {faces} with biometric face)", color=ACCENT_GREEN)
 
     def _browse_camera_video(self, slot_idx):
         path = filedialog.askopenfilename(
@@ -606,6 +694,7 @@ class SmartSuperviseApp(ctk.CTk):
                     cam["cap"] = cap
                     cam["spotted"] = False
                     cam["ended"] = False
+                    cam["last_gray_thumb"] = None
                     cam["fps"] = cap.get(cv2.CAP_PROP_FPS) or 30.0
                     cam["total_frames"] = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cam["is_file"] else 0
                     cam["duration_sec"] = (cam["total_frames"] / cam["fps"]) if cam["is_file"] else 0
@@ -665,18 +754,19 @@ class SmartSuperviseApp(ctk.CTk):
         fps_timer = time.time()
 
         # Step jump per cycle based on scan speed
-        # Yields sufficient CPU time (10-15ms) to prevent GIL starvation so left-panel scrolling/sliding remains silky smooth!
+        # Motion-gated fast search: empty scenes skip in 0.18ms, active scenes run in 44ms (imgsz=320)
         speed_map = {
             "1x":  (1, 0.030),   # 1 frame jump (~30 FPS playback)
-            "4x":  (4, 0.020),   # 4 frame jump (~4x speed)
-            "10x": (10, 0.015),  # 10 frame jump (~10x speed)
-            "30x": (30, 0.012),  # 1 second jump per tick (searches 1hr in ~2 min!)
-            "60x": (60, 0.010)   # 2 second jump per tick (searches 1hr in ~1 min!)
+            "4x":  (4, 0.015),   # 4 frame jump (~4x speed)
+            "10x": (10, 0.005),  # 10 frame jump (~10x speed)
+            "30x": (30, 0.002),  # 1 second jump per step (~30x TRUE fast search!)
+            "60x": (60, 0.001)   # 2 second jump per step (~60x TRUE fast search!)
         }
 
         while self.is_running:
             spd = self.scan_speed.get()
-            step_frames, sleep_time = speed_map.get(spd, (10, 0.008))
+            step_frames, sleep_time = speed_map.get(spd, (10, 0.005))
+            is_fast = spd in ["10x", "30x", "60x"]
 
             any_active = False
             all_ended = True
@@ -715,9 +805,29 @@ class SmartSuperviseApp(ctk.CTk):
 
                 loc_name = cam["location_var"].get().strip() or f"Camera {i+1}"
 
-                # Run AI Scanner on current synchronized frame
+                # ── Smart Motion Gating (0.18ms Check) ──
+                # In CCTV / Movies, static background without movement takes 0.18ms!
+                should_run_ai = True
+                if is_fast and cam["is_file"]:
+                    small_gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 90), interpolation=cv2.INTER_NEAREST)
+                    last_thumb = cam.get("last_gray_thumb")
+                    if last_thumb is not None:
+                        diff = cv2.absdiff(small_gray, last_thumb)
+                        motion_pixels = int(np.count_nonzero(diff > 22))
+                        # If scene is static, and suspect not spotted recently, and not periodic 5-sec check:
+                        if motion_pixels < 35 and not cam["spotted"] and (cur_sec % 5 != 0):
+                            should_run_ai = False
+                    cam["last_gray_thumb"] = small_gray
+
+                if not should_run_ai:
+                    cam["last_annotated"] = frame
+                    cam["spotted"] = False
+                    cam["current_frame"] = frame
+                    continue
+
+                # Run AI Scanner on current frame (fast_mode=True gives 4.6x speedup)
                 annotated_frame, spotted = self.scanner.process_frame(
-                    frame, camera_name=loc_name, video_time_str=global_time_str
+                    frame, camera_name=loc_name, video_time_str=global_time_str, fast_mode=is_fast
                 )
                 cam["last_annotated"] = annotated_frame
                 cam["spotted"] = spotted

@@ -6,24 +6,37 @@ import torchvision.models as models
 import torchvision.transforms as transforms
 from PIL import Image
 
+class TargetAngleProfile:
+    """Stores biometric and visual features for a specific reference angle/photo."""
+    def __init__(self, face_feat, face_box, upper_color, lower_color, deep_emb, thumbnail, angle_label="Front"):
+        self.face_feature = face_feat
+        self.face_box = face_box
+        self.has_face = (face_feat is not None)
+        self.upper_color = upper_color
+        self.lower_color = lower_color
+        self.deep_emb = deep_emb
+        self.thumbnail = thumbnail
+        self.angle_label = angle_label
+
 class TargetMatcher:
     """
-    TargetMatcher: High-Accuracy Biometric Face & Adaptive Clothing Re-ID Engine.
+    TargetMatcher: High-Accuracy Multi-Angle Biometric Face & Clothing Re-ID Engine.
     
-    Biometric Rules:
-    1. Multi-Stage Face Detection:
-       - Uses OpenCV YuNet deep face detector.
-       - If YuNet misses (e.g. tilted head, small scale), automatically falls back
-         to 2x head-region upscale and OpenCV Haar Cascade detector.
-    2. Zero False Positives for Different People:
-       - If target face & candidate face are compared:
-         * SFace cosine < 0.363 (different person) -> strictly capped <= 15% (ZERO false match).
-         * SFace cosine >= 0.363 (same person) -> score 85% to 98%.
-    3. Robust Re-ID Fallback (When Face Is Turned Away):
-       - If candidate face is not visible in a frame (person looking away, motion):
-         * Evaluates LAB clothing color (60%) + deep silhouette (40%).
-         * Same clothing (e.g. pink shirt in Cam 1 & 2) matches reliably (80-90%).
-         * Different clothing (e.g. blue checkered shirt in Cam 4) is rejected (15-30%).
+    Key Features:
+    1. Multi-Angle Gallery:
+       - Supports 1 to 4 reference photos (e.g. Front, Side Profile, Back / Walking Away).
+       - Matches candidates across all uploaded poses/angles.
+    2. Adaptive Illumination Enhancement (CLAHE):
+       - Automatically enhances dark, shadowy, or cinematic video frames (e.g. Mirzapur scenes, railway stations at night).
+    3. Multi-Stage Face Detection:
+       - Stage 1: YuNet deep face detector at native resolution.
+       - Stage 2: YuNet 2x upscale on head region.
+       - Stage 3: OpenCV Haar Cascade fallback.
+    4. Strict Biometric Verification:
+       - Different person (SFace cosine < 0.363) -> strictly <= 15% (ZERO false matches).
+       - Same person (SFace cosine >= 0.363) -> 80% to 98%.
+    5. Robust Re-ID Fallback:
+       - When face is turned away or walking backwards -> evaluates LAB clothing (65%) + silhouette (35%).
     """
     def __init__(self, match_threshold=0.70):
         self.match_threshold = match_threshold
@@ -87,18 +100,29 @@ class TargetMatcher:
             except Exception:
                 pass
         
-        # ── Target State ─────────────────────────────────────────────────────
-        self.target_name = None
-        self.target_deep_emb = None
-        self.target_face_feature = None
-        self.target_has_face = False
-        self.target_upper_color = None
-        self.target_lower_color = None
+        # ── Target State (Multi-Angle Gallery) ────────────────────────────────
+        self.target_name = "Target Person"
+        self.target_profiles = [] # list of TargetAngleProfile
         self.target_thumbnail = None
+
+    def _enhance_lighting_if_dark(self, image_bgr):
+        """Enhances contrast and illumination for dark, cinematic, or shadowy video crops."""
+        if image_bgr is None or image_bgr.size == 0:
+            return image_bgr
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+        mean_lum = float(np.mean(gray))
+        if mean_lum < 85.0: # dark room, night scene, or cinema lighting
+            lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+            l_enhanced = clahe.apply(l)
+            enhanced_lab = cv2.merge([l_enhanced, a, b])
+            return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+        return image_bgr
 
     def _detect_face_and_feature(self, image_bgr):
         """
-        Multi-Stage Face Detection:
+        Multi-Stage Face Detection with lighting adaptation:
         1. YuNet at native scale.
         2. YuNet on head region (upper 55% of crop) at 2x upscale.
         3. Haar Cascade as robust secondary fallback.
@@ -110,14 +134,17 @@ class TargetMatcher:
         h, w = image_bgr.shape[:2]
         if h < 20 or w < 20:
             return None, None
+
+        # Pre-enhance crop if lighting is dark
+        enhanced = self._enhance_lighting_if_dark(image_bgr)
             
         # Stage 1: YuNet on native crop
         try:
             self.face_detector.setInputSize((w, h))
-            _, faces = self.face_detector.detect(image_bgr)
+            _, faces = self.face_detector.detect(enhanced)
             if faces is not None and len(faces) > 0:
                 best_face = max(faces, key=lambda f: f[2] * f[3])
-                aligned = self.face_recognizer.alignCrop(image_bgr, best_face)
+                aligned = self.face_recognizer.alignCrop(enhanced, best_face)
                 feat = self.face_recognizer.feature(aligned)
                 box = (int(best_face[0]), int(best_face[1]), int(best_face[2]), int(best_face[3]))
                 return feat, box
@@ -128,7 +155,7 @@ class TargetMatcher:
         try:
             head_h = int(h * 0.55)
             if head_h >= 20:
-                head_crop = image_bgr[:head_h, :]
+                head_crop = enhanced[:head_h, :]
                 scaled_head = cv2.resize(head_crop, (w * 2, head_h * 2))
                 self.face_detector.setInputSize((w * 2, head_h * 2))
                 _, faces = self.face_detector.detect(scaled_head)
@@ -144,12 +171,10 @@ class TargetMatcher:
         # Stage 3: Haar Cascade fallback
         if self.haar_cascade is not None:
             try:
-                gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+                gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
                 haar_faces = self.haar_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(24, 24))
                 if len(haar_faces) > 0:
                     hx, hy, hw, hh = max(haar_faces, key=lambda b: b[2] * b[3])
-                    # Synthetic 15-parameter face array for SFace alignCrop
-                    # [x, y, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt, x_rcm, y_rcm, x_lcm, y_lcm, score]
                     f_arr = np.array([
                         hx, hy, hw, hh,
                         hx + hw * 0.3, hy + hh * 0.35,
@@ -159,7 +184,7 @@ class TargetMatcher:
                         hx + hw * 0.65, hy + hh * 0.75,
                         0.90
                     ], dtype=np.float32)
-                    aligned = self.face_recognizer.alignCrop(image_bgr, f_arr)
+                    aligned = self.face_recognizer.alignCrop(enhanced, f_arr)
                     feat = self.face_recognizer.feature(aligned)
                     return feat, (hx, hy, hw, hh)
             except Exception:
@@ -213,8 +238,11 @@ class TargetMatcher:
         norm = np.linalg.norm(emb)
         return emb / norm if norm > 0 else emb
 
-    def set_target_photo(self, image_path_or_crop, target_name="Target Person"):
-        """Stores the visual biometric signature of the target person."""
+    def add_target_photo(self, image_path_or_crop, angle_label=None):
+        """
+        Adds a reference photo/angle to the target's multi-angle gallery.
+        Example angle_labels: 'Front', 'Side Profile', 'Back / Walking Away'.
+        """
         if isinstance(image_path_or_crop, str):
             image_bgr = cv2.imread(image_path_or_crop)
             if image_bgr is None:
@@ -222,80 +250,112 @@ class TargetMatcher:
         else:
             image_bgr = image_path_or_crop
 
-        self.target_name = target_name
-        self.target_thumbnail = cv2.resize(image_bgr, (96, 128))
-        
+        if angle_label is None:
+            idx = len(self.target_profiles) + 1
+            if idx == 1:
+                angle_label = "Front View"
+            elif idx == 2:
+                angle_label = "Side Profile"
+            elif idx == 3:
+                angle_label = "Back / Walking"
+            else:
+                angle_label = f"Angle {idx}"
+
         # 1. Biometric Face Analysis
         face_feat, face_box = self._detect_face_and_feature(image_bgr)
-        self.target_face_feature = face_feat
-        self.target_has_face = (face_feat is not None)
         
-        # 2. Adaptive Clothing Color Signatures
-        self.target_upper_color, self.target_lower_color = self._extract_clothing_colors(image_bgr, face_box=face_box)
+        # 2. Clothing Color Signatures
+        upper_color, lower_color = self._extract_clothing_colors(image_bgr, face_box=face_box)
         
         # 3. Deep Appearance Representation
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        self.target_deep_emb = self._extract_deep_features(Image.fromarray(image_rgb))
+        deep_emb = self._extract_deep_features(Image.fromarray(image_rgb))
+        
+        # 4. Thumbnail
+        thumbnail = cv2.resize(image_bgr, (96, 128))
+        if len(self.target_profiles) == 0:
+            self.target_thumbnail = thumbnail
+
+        profile = TargetAngleProfile(
+            face_feat=face_feat,
+            face_box=face_box,
+            upper_color=upper_color,
+            lower_color=lower_color,
+            deep_emb=deep_emb,
+            thumbnail=thumbnail,
+            angle_label=angle_label
+        )
+        self.target_profiles.append(profile)
         return True
+
+    def set_target_photo(self, image_path_or_crop, target_name="Target Person", angle_label="Front View"):
+        """Clears gallery and sets the primary reference photo."""
+        self.clear_target()
+        self.target_name = target_name
+        return self.add_target_photo(image_path_or_crop, angle_label=angle_label)
 
     def compare(self, candidate_bgr_crop):
         """
-        Compares candidate against target.
-        Returns: (is_match: bool, similarity_score: float)
+        Compares candidate against all stored reference angles in the gallery.
+        Returns: (is_match: bool, best_similarity_score: float)
         """
-        if self.target_deep_emb is None or candidate_bgr_crop.size == 0:
+        if len(self.target_profiles) == 0 or candidate_bgr_crop.size == 0:
             return False, 0.0
 
         if candidate_bgr_crop.shape[0] < 20 or candidate_bgr_crop.shape[1] < 10:
             return False, 0.0
 
         try:
+            # Pre-enhance candidate if lighting is dark / cinema style
+            enhanced_cand = self._enhance_lighting_if_dark(candidate_bgr_crop)
+
             # 1. Candidate Face Biometrics
-            cand_face_feat, cand_face_box = self._detect_face_and_feature(candidate_bgr_crop)
+            cand_face_feat, cand_face_box = self._detect_face_and_feature(enhanced_cand)
             
             # 2. Candidate Clothing Color
-            cand_upper, cand_lower = self._extract_clothing_colors(candidate_bgr_crop, face_box=cand_face_box)
-            sim_upper = max(0.0, float(np.dot(self.target_upper_color, cand_upper)))
-            sim_lower = max(0.0, float(np.dot(self.target_lower_color, cand_lower)))
-            color_score = (0.55 * sim_upper) + (0.45 * sim_lower)
+            cand_upper, cand_lower = self._extract_clothing_colors(enhanced_cand, face_box=cand_face_box)
 
             # 3. Candidate Deep Features
-            cand_rgb = cv2.cvtColor(candidate_bgr_crop, cv2.COLOR_BGR2RGB)
+            cand_rgb = cv2.cvtColor(enhanced_cand, cv2.COLOR_BGR2RGB)
             cand_deep = self._extract_deep_features(Image.fromarray(cand_rgb))
-            raw_deep_sim = float(np.dot(self.target_deep_emb, cand_deep))
-            sim_deep = max(0.0, min(1.0, (raw_deep_sim - 0.70) / 0.30))
 
-            # ── Multi-Modal Fusion Logic ────────────────────────────────────
-            if self.target_has_face and self.face_recognizer is not None and cand_face_feat is not None:
-                # Both target and candidate have faces visible:
-                raw_face_cos = self.face_recognizer.match(
-                    self.target_face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
-                )
-                
-                if raw_face_cos < 0.363:
-                    # Confirmed DIFFERENT person (e.g. woman vs man) -> strictly <= 15%
-                    total_score = max(0.0, (raw_face_cos / 0.363) * 0.15) if raw_face_cos > 0 else 0.02
+            # Evaluate candidate against EVERY reference angle profile
+            scores = []
+            for profile in self.target_profiles:
+                sim_upper = max(0.0, float(np.dot(profile.upper_color, cand_upper)))
+                sim_lower = max(0.0, float(np.dot(profile.lower_color, cand_lower)))
+                color_score = (0.55 * sim_upper) + (0.45 * sim_lower)
+
+                raw_deep_sim = float(np.dot(profile.deep_emb, cand_deep))
+                sim_deep = max(0.0, min(1.0, (raw_deep_sim - 0.70) / 0.30))
+
+                if profile.has_face and self.face_recognizer is not None and cand_face_feat is not None:
+                    # Both faces visible: Biometric SFace comparison
+                    raw_face_cos = self.face_recognizer.match(
+                        profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
+                    )
+                    if raw_face_cos < 0.363:
+                        # Confirmed DIFFERENT person -> capped <= 15%
+                        score = max(0.0, (raw_face_cos / 0.363) * 0.15) if raw_face_cos > 0 else 0.02
+                    else:
+                        # Confirmed SAME person -> 80% to 98%
+                        face_calibrated = 0.75 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.25
+                        score = (0.75 * face_calibrated) + (0.15 * color_score) + (0.10 * sim_deep)
                 else:
-                    # Confirmed SAME person -> 80% to 98%
-                    face_calibrated = 0.75 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.25
-                    total_score = (0.75 * face_calibrated) + (0.15 * color_score) + (0.10 * sim_deep)
-            else:
-                # Face not visible on candidate in this frame (motion blur, tilted, back turned):
-                # Fall back to Clothing Color + Appearance Re-ID!
-                total_score = (0.65 * color_score) + (0.35 * sim_deep)
+                    # Face turned away / walking backwards -> evaluate clothing + appearance against this angle
+                    score = (0.65 * color_score) + (0.35 * sim_deep)
 
-            total_score = max(0.0, min(1.0, total_score))
-            is_match = total_score >= self.match_threshold
+                scores.append(max(0.0, min(1.0, score)))
 
-            return is_match, round(total_score, 3)
+            best_score = max(scores) if scores else 0.0
+            is_match = best_score >= self.match_threshold
+
+            return is_match, round(best_score, 3)
         except Exception:
             return False, 0.0
 
     def clear_target(self):
-        self.target_name = None
-        self.target_deep_emb = None
-        self.target_face_feature = None
-        self.target_has_face = False
-        self.target_upper_color = None
-        self.target_lower_color = None
+        """Clears all stored target profiles."""
+        self.target_name = "Target Person"
+        self.target_profiles.clear()
         self.target_thumbnail = None

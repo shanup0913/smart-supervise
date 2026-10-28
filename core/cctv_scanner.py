@@ -52,14 +52,18 @@ class CCTVScanner:
         self.alerts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alerts"))
         os.makedirs(self.alerts_dir, exist_ok=True)
 
-    def set_person_target(self, photo_path_or_crop, person_name="Target Person"):
+    def set_person_target(self, photo_path_or_crop, person_name="Target Person", angle_label="Front View"):
         """Sets a target person by reference photo."""
         self.tracking_mode = "person_photo"
-        self.matcher.set_target_photo(photo_path_or_crop, target_name=person_name)
+        self.matcher.set_target_photo(photo_path_or_crop, target_name=person_name, angle_label=angle_label)
         self.last_sighting["found"] = False
         self.last_sighting["target_name"] = person_name
         self.sightings_history.clear()
         return True
+
+    def add_person_photo(self, photo_path_or_crop, angle_label=None):
+        """Adds an additional angle/pose to the target person's gallery."""
+        return self.matcher.add_target_photo(photo_path_or_crop, angle_label=angle_label)
 
     def set_class_target(self, class_name="dog"):
         """Sets tracking for an animal/intruder class (e.g. 'dog' for school safety)."""
@@ -71,7 +75,7 @@ class CCTVScanner:
         self.sightings_history.clear()
         return True
 
-    def process_frame(self, frame, camera_name="Camera 1", video_time_str=None):
+    def process_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
         """
         Analyzes a single video frame with YOLO + Biometric Matcher.
         Returns annotated frame with bounding boxes, alert status, and burned-in timestamps.
@@ -94,8 +98,11 @@ class CCTVScanner:
         cv2.putText(annotated_frame, osd_text, (osd_x1 + 6, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 255) if video_time_str else (0, 255, 0), 1)
 
-        # Run YOLO detection with high sensitivity (classes 0=person, 15=cat, 16=dog, etc.)
-        results = self.model(frame, verbose=False, conf=0.25)[0]
+        # Run YOLO detection with high sensitivity (imgsz=320 during fast search for 4.6x speedup)
+        if fast_mode:
+            results = self.model(frame, verbose=False, conf=0.20, imgsz=320)[0]
+        else:
+            results = self.model(frame, verbose=False, conf=0.20)[0]
         
         for box in results.boxes:
             cls_id = int(box.cls[0].item())

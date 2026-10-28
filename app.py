@@ -8,6 +8,7 @@ from datetime import datetime
 from PIL import Image, ImageTk
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
 
 # Add project root to path
@@ -15,6 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from core.reid_matcher import TargetMatcher
 from core.cctv_scanner import CCTVScanner
 from core.location_tracker import LocationTracker
+from core.map_visualizer import MapVisualizer
 
 # ─── App Theme ────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -37,21 +39,23 @@ class SmartSuperviseApp(ctk.CTk):
         
         # ── Window Setup ────────────────────────────────────────────────────
         self.title("Smart Supervise — Time-Synchronized Multi-Camera CCTV Intelligence")
-        self.geometry("1380x860")
-        self.minsize(1120, 740)
+        self.geometry("1360x780")
+        self.minsize(1050, 620)
         self.configure(fg_color=DARK_BG)
 
         # ── Core AI Components ──────────────────────────────────────────────
         self.scanner  = CCTVScanner()
         self.tracker  = LocationTracker(lost_timeout_seconds=30)
+        self.map_visualizer = MapVisualizer()
+        self.pulse_tick = 0
 
         # ── State Variables ──────────────────────────────────────────────────
         self.is_running         = False
         self.scan_thread        = None
         self.target_photo       = None
         self.tracking_mode      = ctk.StringVar(value="person")
-        self.display_mode       = ctk.StringVar(value="grid")      # "grid", "cam0", "cam1", "cam2", "cam3", "spotlight"
-        self.scan_speed         = ctk.StringVar(value="10x")       # "1x", "4x", "10x", "30x", "60x"
+        self.display_mode       = ctk.StringVar(value="grid")      # "grid", "cam0", "cam1", "cam2", "cam3", "spotlight", "map"
+        self.scan_speed         = ctk.StringVar(value="30x")       # Global speed selector
         self.global_clock_sec   = 0
         self.max_video_duration = 0
         self.last_spotlight_idx = 0
@@ -75,6 +79,7 @@ class SmartSuperviseApp(ctk.CTk):
                 "enabled": ctk.BooleanVar(value=(i == 0)),
                 "source_var": ctk.StringVar(value="0" if i == 0 else ""),
                 "location_var": ctk.StringVar(value=default_locations[i]),
+                "speed_var": ctk.StringVar(value="30x"),
                 "cap": None,
                 "fps": 30.0,
                 "current_frame": None,
@@ -82,6 +87,7 @@ class SmartSuperviseApp(ctk.CTk):
                 "spotted": False,
                 "total_frames": 0,
                 "duration_sec": 0,
+                "current_frame_pos": 0,
                 "is_file": False,
                 "ended": False,
                 "last_gray_thumb": None
@@ -265,6 +271,7 @@ class SmartSuperviseApp(ctk.CTk):
             speed_frame,
             values=["1x", "4x", "10x", "30x", "60x"],
             variable=self.scan_speed,
+            command=self._on_global_speed_change,
             selected_color=ACCENT_BLUE,
             height=24,
             font=ctk.CTkFont(size=10)
@@ -323,7 +330,19 @@ class SmartSuperviseApp(ctk.CTk):
                 placeholder_text="Room / Floor Location",
                 width=210, height=24, fg_color=DARK_BG, border_color=ACCENT_BLUE,
                 font=ctk.CTkFont(size=10)
-            ).pack(padx=8, pady=(1, 5))
+            ).pack(padx=8, pady=(1, 3))
+
+            spd_row = ctk.CTkFrame(cframe, fg_color="transparent")
+            spd_row.pack(fill="x", padx=8, pady=(0, 5))
+            ctk.CTkLabel(spd_row, text="Speed:", font=ctk.CTkFont(size=9, weight="bold"), text_color=TEXT_DIM).pack(side="left", padx=(0, 4))
+            ctk.CTkSegmentedButton(
+                spd_row,
+                values=["1x", "4x", "10x", "30x", "60x"],
+                variable=cam["speed_var"],
+                selected_color=ACCENT_BLUE,
+                height=20,
+                font=ctk.CTkFont(size=9)
+            ).pack(side="left", fill="x", expand=True)
 
         # ── Start / Stop Buttons ──
         self.start_btn = ctk.CTkButton(
@@ -363,7 +382,7 @@ class SmartSuperviseApp(ctk.CTk):
 
         self.view_buttons = ctk.CTkSegmentedButton(
             header,
-            values=["⊞ 4-Grid", "Cam 1", "Cam 2", "Cam 3", "Cam 4", "Spotlight"],
+            values=["⊞ 4-Grid", "Cam 1", "Cam 2", "Cam 3", "Cam 4", "Spotlight", "🗺️ Rapido Map"],
             command=self._on_display_mode_change,
             selected_color=ACCENT_BLUE,
             height=26,
@@ -433,6 +452,18 @@ class SmartSuperviseApp(ctk.CTk):
         )
         self.single_label.pack(fill="both", expand=True, padx=2, pady=2)
 
+        # ── Interactive 2D Rapido Live Map Container ──
+        self.map_container = ctk.CTkFrame(panel, fg_color="transparent")
+        map_hdr = ctk.CTkFrame(self.map_container, fg_color=CARD_BG, corner_radius=6, height=28)
+        map_hdr.pack(fill="x", padx=2, pady=(2, 4))
+        ctk.CTkLabel(
+            map_hdr, text="🗺️ RAPIDO LIVE SURVEILLANCE RADAR & TRANSIT ROUTE MAP",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_AMBER
+        ).pack(side="left", padx=8)
+
+        self.full_map_canvas = tk.Canvas(self.map_container, bg="#0a0b16", highlightthickness=0)
+        self.full_map_canvas.pack(fill="both", expand=True, padx=2, pady=2)
+
         # ── LAST KNOWN LOCATION Banner ──
         self.last_seen_banner = ctk.CTkFrame(panel, fg_color=CARD_BG, corner_radius=8, height=42)
         self.last_seen_banner.pack(fill="x", padx=6, pady=(0, 6))
@@ -500,27 +531,44 @@ class SmartSuperviseApp(ctk.CTk):
         journey_card.pack(side="top", fill="x", padx=8, pady=(0, 6))
 
         ctk.CTkLabel(
-            journey_card, text="📍 COMPLETE ROUTE TRAIL:",
+            journey_card, text="📍 RAPIDO LIVE ROUTE RADAR (Click for Full Map):",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=ACCENT_GREEN
-        ).pack(pady=(4, 2), padx=8, anchor="w")
+        ).pack(pady=(4, 1), padx=8, anchor="w")
+
+        # Mini Live Rapido Radar Map Canvas
+        self.mini_map_canvas = tk.Canvas(journey_card, height=130, bg="#0e0f1e", highlightthickness=0, cursor="hand2")
+        self.mini_map_canvas.pack(fill="x", padx=6, pady=(1, 4))
+        self.mini_map_canvas.bind("<Button-1>", lambda e: self._switch_to_map_view())
 
         self.journey_route_label = ctk.CTkLabel(
             journey_card, text="Waiting for sightings...",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(size=10, weight="bold"),
             text_color=TEXT_LIGHT,
             wraplength=280, justify="left"
         )
         self.journey_route_label.pack(padx=8, pady=(0, 4), anchor="w")
 
+        btn_box = ctk.CTkFrame(journey_card, fg_color="transparent")
+        btn_box.pack(fill="x", padx=6, pady=(0, 6))
+
         ctk.CTkButton(
-            journey_card, text="🗺 View Full Journey Flowchart",
-            command=self._show_journey_modal,
+            btn_box, text="🗺️ Open Full Map",
+            command=self._switch_to_map_view,
             fg_color=DARK_BG, hover_color=PANEL_BG,
             border_width=1, border_color=ACCENT_BLUE,
             corner_radius=6, height=24,
-            font=ctk.CTkFont(size=10, weight="bold")
-        ).pack(fill="x", padx=8, pady=(0, 6))
+            font=ctk.CTkFont(size=9, weight="bold")
+        ).pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+        ctk.CTkButton(
+            btn_box, text="📊 Flowchart",
+            command=self._show_journey_modal,
+            fg_color=DARK_BG, hover_color=PANEL_BG,
+            border_width=1, border_color=ACCENT_AMBER,
+            corner_radius=6, height=24,
+            font=ctk.CTkFont(size=9, weight="bold")
+        ).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
         ctk.CTkLabel(
             panel, text="DETAILED TIMELINE LOG",
@@ -549,20 +597,45 @@ class SmartSuperviseApp(ctk.CTk):
             self.class_entry_frame.pack_forget()
             self.photo_frame.pack(fill="x", padx=4, pady=(0, 6))
 
+    def _on_global_speed_change(self, value):
+        for cam in self.camera_slots:
+            cam["speed_var"].set(value)
+
+    def _switch_to_map_view(self):
+        self.view_buttons.set("🗺️ Rapido Map")
+        self._on_display_mode_change("🗺️ Rapido Map")
+
     def _on_display_mode_change(self, mode):
+        self.grid_container.pack_forget()
+        self.single_container.pack_forget()
+        self.map_container.pack_forget()
+
         if mode == "⊞ 4-Grid":
-            self.single_container.pack_forget()
             self.grid_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
             self.display_mode.set("grid")
         elif mode == "Spotlight":
-            self.grid_container.pack_forget()
             self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
             self.display_mode.set("spotlight")
+        elif "Map" in mode:
+            self.map_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+            self.display_mode.set("map")
+            self._render_full_map()
         else:
             idx = int(mode.replace("Cam ", "")) - 1
-            self.grid_container.pack_forget()
             self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
             self.display_mode.set(f"cam{idx}")
+
+    def _render_full_map(self):
+        fw = self.full_map_canvas.winfo_width() or 640
+        fh = self.full_map_canvas.winfo_height() or 460
+        route = self.tracker.get_journey_route()
+        cam_names = [c["location_var"].get().strip() or f"Camera {i+1}" for i, c in enumerate(self.camera_slots)]
+        self.map_visualizer.draw_map(
+            self.full_map_canvas, fw, fh,
+            route=route, camera_names=cam_names,
+            last_known=self.tracker.last_known,
+            pulse_tick=self.pulse_tick, is_mini=False
+        )
 
     def _upload_photo(self):
         paths = filedialog.askopenfilenames(
@@ -795,17 +868,29 @@ class SmartSuperviseApp(ctk.CTk):
 
                 any_active = True
 
-                # Synchronize to global clock position
+                # Individual camera speed multiplier!
+                cam_spd = cam["speed_var"].get()
+                cam_step_frames, _ = speed_map.get(cam_spd, (10, 0.005))
+                is_fast = cam_spd in ["10x", "30x", "60x"]
+
+                # Advance this specific camera by its individual speed
                 if cam["is_file"]:
-                    target_frame = int(self.global_clock_sec * cam["fps"])
-                    if cam["total_frames"] > 0 and target_frame >= cam["total_frames"]:
+                    cam["current_frame_pos"] += cam_step_frames
+                    if cam["total_frames"] > 0 and cam["current_frame_pos"] >= cam["total_frames"]:
                         cam["ended"] = True
                         continue
                     else:
                         all_ended = False
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, cam["current_frame_pos"])
+
+                    cam_sec = int(cam["current_frame_pos"] / max(1.0, cam["fps"]))
+                    ch = cam_sec // 3600
+                    cm_ = (cam_sec % 3600) // 60
+                    cs = cam_sec % 60
+                    cam_time_str = f"{ch:02d}:{cm_:02d}:{cs:02d}"
                 else:
                     all_ended = False
+                    cam_time_str = global_time_str
 
                 ret, frame = cap.read()
                 if not ret or frame is None:
@@ -835,7 +920,7 @@ class SmartSuperviseApp(ctk.CTk):
 
                 # Run AI Scanner on current frame (fast_mode=True gives 4.6x speedup)
                 annotated_frame, spotted = self.scanner.process_frame(
-                    frame, camera_name=loc_name, video_time_str=global_time_str, fast_mode=is_fast
+                    frame, camera_name=loc_name, video_time_str=cam_time_str, fast_mode=is_fast
                 )
                 cam["last_annotated"] = annotated_frame
                 cam["spotted"] = spotted
@@ -847,7 +932,7 @@ class SmartSuperviseApp(ctk.CTk):
                         camera_name=self.scanner.last_sighting["camera_name"],
                         confidence=self.scanner.last_sighting["confidence"],
                         snapshot_path=self.scanner.last_sighting.get("snapshot_path", ""),
-                        video_time=global_time_str
+                        video_time=cam_time_str
                     )
 
             # Advance global clock synchronously
@@ -925,7 +1010,21 @@ class SmartSuperviseApp(ctk.CTk):
                     tile["frame"].configure(border_color="#181828", border_width=1)
                     tile["label"].configure(image=None, text=f"Camera {i+1}\n(Disabled in Settings)")
 
-        # ── View Mode B: Focused Single Camera or Spotlight ──
+        # ── View Mode B: Interactive Rapido Live Map ──
+        elif current_display == "map":
+            self.pulse_tick += 1
+            fw = self.full_map_canvas.winfo_width() or 640
+            fh = self.full_map_canvas.winfo_height() or 460
+            route = self.tracker.get_journey_route()
+            cam_names = [c["location_var"].get().strip() or f"Camera {i+1}" for i, c in enumerate(self.camera_slots)]
+            self.map_visualizer.draw_map(
+                self.full_map_canvas, fw, fh,
+                route=route, camera_names=cam_names,
+                last_known=self.tracker.last_known,
+                pulse_tick=self.pulse_tick, is_mini=False
+            )
+
+        # ── View Mode C: Focused Single Camera or Spotlight ──
         else:
             if current_display == "spotlight":
                 idx = self.last_spotlight_idx
@@ -953,6 +1052,18 @@ class SmartSuperviseApp(ctk.CTk):
                 cimg = ctk.CTkImage(pimg, size=(nw, nh))
                 self.single_label.configure(image=cimg, text="")
                 self.single_label.image = cimg
+
+        # Update Mini Live Rapido Map in right panel
+        mw = self.mini_map_canvas.winfo_width() or 290
+        mh = self.mini_map_canvas.winfo_height() or 130
+        route = self.tracker.get_journey_route()
+        cam_names = [c["location_var"].get().strip() or f"Camera {i+1}" for i, c in enumerate(self.camera_slots)]
+        self.map_visualizer.draw_map(
+            self.mini_map_canvas, mw, mh,
+            route=route, camera_names=cam_names,
+            last_known=self.tracker.last_known,
+            pulse_tick=self.pulse_tick, is_mini=True
+        )
 
         # Update Last Seen banner & Timeline (with dirty checking to prevent UI lag)
         self._update_last_seen_banner()

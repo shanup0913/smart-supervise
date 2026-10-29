@@ -24,6 +24,38 @@ class MapVisualizer:
             (0.22, 0.72),  # Camera 4 (Cafeteria / West Plaza)
         ]
         self.tracer_progress = 0.0 # Loops from 0 to len(route) for sequential trip playback
+        self.is_paused = False
+        self.speed_multiplier = 1.0 # 0.5x, 1.0x, 2.0x
+        self.dwell_counter = 0      # Ticks paused at a station or finale
+        self.current_step_info = "Trip Ready"
+
+    def toggle_pause(self):
+        """Toggles pause/play for the trip tracer animation."""
+        self.is_paused = not self.is_paused
+        return self.is_paused
+
+    def step_forward(self, total_hops):
+        """Manually advances tracer to the next hop."""
+        if total_hops > 0:
+            cur = int(self.tracer_progress)
+            self.tracer_progress = float((cur + 1) % total_hops)
+            self.dwell_counter = 0
+
+    def step_backward(self, total_hops):
+        """Manually rewinds tracer to the previous hop."""
+        if total_hops > 0:
+            cur = int(self.tracer_progress)
+            self.tracer_progress = float((cur - 1 + total_hops) % total_hops)
+            self.dwell_counter = 0
+
+    def set_speed(self, speed_str):
+        """Adjusts tracer speed multiplier."""
+        if "Slow" in speed_str or "0.5" in speed_str:
+            self.speed_multiplier = 0.5
+        elif "Fast" in speed_str or "2" in speed_str:
+            self.speed_multiplier = 2.0
+        else:
+            self.speed_multiplier = 1.0
 
     def _get_cam_idx(self, cam_name):
         """Extracts 0-indexed camera number from any camera name string."""
@@ -180,34 +212,69 @@ class MapVisualizer:
                         canvas.create_text(mx, my, text=badge_txt, fill=core_color, font=("Arial", 7, "bold"))
 
         # ── 4. Sequential Blinking Tracer Loop (Start to End Trip Playback) ─
-        # A glowing comet pulse travels along the entire journey path from Start -> End
         if hop_splines:
             total_hops = len(hop_splines)
-            # Advance tracer progress
-            speed_per_tick = 0.06 if not is_mini else 0.08
-            self.tracer_progress = (self.tracer_progress + speed_per_tick) % total_hops
-            cur_hop_idx = int(self.tracer_progress)
-            t_frac = self.tracer_progress - cur_hop_idx
+            cur_hop_idx = min(total_hops - 1, max(0, int(self.tracer_progress)))
+            t_frac = self.tracer_progress - int(self.tracer_progress)
 
-            p1, pc, p2, _, _ = hop_splines[cur_hop_idx]
+            p1, pc, p2, hop_data, step_num = hop_splines[cur_hop_idx]
+            dest_cam_name = hop_data.get("camera", f"Camera {step_num}")
+            dest_time = hop_data.get("video_time", "")
+            is_final_hop = (cur_hop_idx == total_hops - 1)
+
+            # Advance tracer when not paused (smooth gliding with station dwell)
+            if not self.is_paused:
+                base_step = (0.015 if not is_mini else 0.025) * self.speed_multiplier
+                if t_frac >= 0.95:
+                    # Station arrival dwell
+                    max_dwell = 35 if is_final_hop else 18
+                    if self.dwell_counter < max_dwell:
+                        self.dwell_counter += 1
+                        t_frac = 1.0 # hold at destination node
+                    else:
+                        self.dwell_counter = 0
+                        self.tracer_progress = float((cur_hop_idx + 1) % total_hops)
+                        t_frac = 0.0
+                else:
+                    self.tracer_progress += base_step
+                    t_frac = min(1.0, self.tracer_progress - int(self.tracer_progress))
+
             tracer_x, tracer_y = self._eval_bezier(p1, pc, p2, t_frac)
 
+            # Update current step telemetry info for controller
+            if t_frac >= 0.92:
+                if is_final_hop:
+                    self.current_step_info = f"🏁 ARRIVED AT DESTINATION: {dest_cam_name} @ {dest_time}"
+                else:
+                    self.current_step_info = f"Station Stop: {dest_cam_name} @ {dest_time}"
+            else:
+                self.current_step_info = f"Transit: Hop {step_num} of {total_hops} ➔ {dest_cam_name}"
+
             # Glowing Tracer Comet
-            t_radius = 7 if not is_mini else 5
-            canvas.create_oval(tracer_x - t_radius - 4, tracer_y - t_radius - 4,
-                               tracer_x + t_radius + 4, tracer_y + t_radius + 4,
+            t_radius = 8 if not is_mini else 5
+            canvas.create_oval(tracer_x - t_radius - 5, tracer_y - t_radius - 5,
+                               tracer_x + t_radius + 5, tracer_y + t_radius + 5,
                                fill="", outline="#ffff00", width=2)
             canvas.create_oval(tracer_x - t_radius, tracer_y - t_radius,
                                tracer_x + t_radius, tracer_y + t_radius,
                                fill="#ffea00", outline="#ffffff", width=1)
 
-            # Sequential Node Flash: when tracer reaches near node endpoint (t > 0.85), pulse that node!
+            # Station Arrival Radar Ripple
             if t_frac > 0.85:
-                pulse_hop_dest = p2
-                flash_r = (pulse_tick % 8) * 3 + 18
-                canvas.create_oval(pulse_hop_dest[0] - flash_r, pulse_hop_dest[1] - flash_r,
-                                   pulse_hop_dest[0] + flash_r, pulse_hop_dest[1] + flash_r,
-                                   outline="#00ffcc", width=2)
+                pulse_r = (pulse_tick % 10) * 3 + 16
+                pulse_col = "#00e676" if is_final_hop else "#00f5ff"
+                canvas.create_oval(p2[0] - pulse_r, p2[1] - pulse_r,
+                                   p2[0] + pulse_r, p2[1] + pulse_r,
+                                   outline=pulse_col, width=2)
+
+            # Destination Arrival Finale Banner ("after seq")
+            if is_final_hop and t_frac >= 0.88 and not is_mini:
+                fin_y = height - 55
+                canvas.create_rectangle(width//2 - 210, fin_y - 14, width//2 + 210, fin_y + 14,
+                                        fill="#052e16", outline="#00e676", width=2)
+                canvas.create_text(width//2, fin_y,
+                                   text=f"🏁 TRIP COMPLETE · ARRIVED: {dest_cam_name} @ {dest_time}",
+                                   fill="#b9f6ca", font=("Arial", 9, "bold"))
 
         # ── 5. Camera Nodes ──────────────────────────────────────────────────
         node_radius = 18 if not is_mini else 10

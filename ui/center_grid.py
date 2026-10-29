@@ -116,6 +116,49 @@ class CenterGrid(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_AMBER
         ).pack(side="left", padx=8)
 
+        # ── Map Journey Playback Controller Bar (Play/Pause, Step, Speed, Telemetry) ──
+        self.map_ctrl_bar = ctk.CTkFrame(self.map_container, fg_color=CARD_BG, corner_radius=8, height=36)
+        self.map_ctrl_bar.pack(fill="x", padx=2, pady=(0, 4), side="bottom")
+
+        # Play / Pause
+        self.map_play_btn = ctk.CTkButton(
+            self.map_ctrl_bar, text="⏸ Pause", width=68, height=26,
+            fg_color=DARK_BG, hover_color=PANEL_BG, font=ctk.CTkFont(size=10, weight="bold"),
+            command=self._toggle_map_playback
+        )
+        self.map_play_btn.pack(side="left", padx=(8, 4), pady=4)
+
+        # Step Back
+        ctk.CTkButton(
+            self.map_ctrl_bar, text="⏮ Prev Hop", width=74, height=26,
+            fg_color=DARK_BG, hover_color=PANEL_BG, font=ctk.CTkFont(size=10),
+            command=self._step_map_backward
+        ).pack(side="left", padx=2, pady=4)
+
+        # Step Forward
+        ctk.CTkButton(
+            self.map_ctrl_bar, text="Next Hop ⏭", width=74, height=26,
+            fg_color=DARK_BG, hover_color=PANEL_BG, font=ctk.CTkFont(size=10),
+            command=self._step_map_forward
+        ).pack(side="left", padx=2, pady=4)
+
+        # Tracer Speed Selector
+        ctk.CTkLabel(self.map_ctrl_bar, text="Speed:", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_DIM).pack(side="left", padx=(10, 4))
+        self.map_tracer_speed = ctk.CTkSegmentedButton(
+            self.map_ctrl_bar, values=["Slow (0.5x)", "Normal (1x)", "Fast (2x)"],
+            height=22, font=ctk.CTkFont(size=9), selected_color=ACCENT_BLUE,
+            command=self._on_map_speed_change
+        )
+        self.map_tracer_speed.set("Normal (1x)")
+        self.map_tracer_speed.pack(side="left", padx=2, pady=4)
+
+        # Journey Step Telemetry Pill
+        self.map_step_label = ctk.CTkLabel(
+            self.map_ctrl_bar, text="Trip Status: Standby",
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=ACCENT_GREEN
+        )
+        self.map_step_label.pack(side="right", padx=12, pady=4)
+
         self.full_map_canvas = tk.Canvas(self.map_container, bg="#0a0b16", highlightthickness=0)
         self.full_map_canvas.pack(fill="both", expand=True, padx=2, pady=2)
 
@@ -156,6 +199,25 @@ class CenterGrid(ctk.CTkFrame):
             self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
             self.display_mode.set(f"cam{idx}")
 
+    def _toggle_map_playback(self):
+        is_paused = self.app.map_visualizer.toggle_pause()
+        self.map_play_btn.configure(text="▶ Play" if is_paused else "⏸ Pause")
+
+    def _step_map_backward(self):
+        route = self.app.tracker.get_journey_route()
+        total_hops = max(1, len(route) - 1)
+        self.app.map_visualizer.step_backward(total_hops)
+        self.render_full_map()
+
+    def _step_map_forward(self):
+        route = self.app.tracker.get_journey_route()
+        total_hops = max(1, len(route) - 1)
+        self.app.map_visualizer.step_forward(total_hops)
+        self.render_full_map()
+
+    def _on_map_speed_change(self, value):
+        self.app.map_visualizer.set_speed(value)
+
     def render_full_map(self):
         fw = self.full_map_canvas.winfo_width() or 640
         fh = self.full_map_canvas.winfo_height() or 460
@@ -167,6 +229,8 @@ class CenterGrid(ctk.CTkFrame):
             last_known=self.app.tracker.last_known,
             pulse_tick=self.app.pulse_tick, is_mini=False
         )
+        if hasattr(self, "map_step_label") and self.app.map_visualizer.current_step_info:
+            self.map_step_label.configure(text=self.app.map_visualizer.current_step_info)
 
     def update_view(self, video_engine):
         current_display = self.display_mode.get()

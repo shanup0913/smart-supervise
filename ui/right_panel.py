@@ -159,7 +159,7 @@ class RightPanel(ctk.CTkFrame):
             self._last_route_text = route_arrow
 
         # Dirty-check timeline text
-        trail_str = self.app.tracker.get_movement_trail()
+        trail_str = self.app.tracker.get_formatted_timeline()
         if trail_str != self._last_trail_text:
             self.timeline_box.configure(state="normal")
             self.timeline_box.delete("1.0", "end")

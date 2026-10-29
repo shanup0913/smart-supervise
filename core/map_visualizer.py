@@ -57,13 +57,24 @@ class MapVisualizer:
         else:
             self.speed_multiplier = 1.0
 
-    def _get_cam_idx(self, cam_name):
-        """Extracts 0-indexed camera number from any camera name string."""
-        if not cam_name:
+    def _get_cam_idx(self, cam_info, camera_names=None):
+        """Extracts 0-indexed camera number (0..3) from dictionary, int, or string."""
+        if isinstance(cam_info, dict):
+            if "camera_id" in cam_info and cam_info["camera_id"] is not None:
+                return min(3, max(0, int(cam_info["camera_id"])))
+            cam_info = cam_info.get("camera", "")
+        if isinstance(cam_info, int):
+            return min(3, max(0, cam_info))
+        if not cam_info:
             return 0
-        name_lower = str(cam_name).lower()
+        name_str = str(cam_info).strip()
+        if camera_names:
+            for idx, cn in enumerate(camera_names):
+                if cn and (cn.lower() == name_str.lower() or name_str.lower() in cn.lower() or cn.lower() in name_str.lower()):
+                    return idx
+        name_lower = name_str.lower()
         for i in range(4):
-            if f"camera {i+1}" in name_lower or f"cam {i+1}" in name_lower or f"cam{i+1}" in name_lower:
+            if f"camera {i+1}" in name_lower or f"cam {i+1}" in name_lower or f"cam{i+1}" in name_lower or f"c{i+1}" in name_lower:
                 return i
         return 0
 
@@ -145,7 +156,7 @@ class MapVisualizer:
         hop_splines = [] # List of ((x0, y0), (xc, yc), (x1, y1), step_info)
 
         if route and len(route) >= 1:
-            route_node_indices = [self._get_cam_idx(r["camera"]) for r in route]
+            route_node_indices = [self._get_cam_idx(r, camera_names) for r in route]
             visited_cam_indices = list(set(route_node_indices))
 
             # Track edges between pairs to offset return trips cleanly
@@ -155,6 +166,11 @@ class MapVisualizer:
                 for step_idx in range(len(route) - 1):
                     c1_idx = route_node_indices[step_idx]
                     c2_idx = route_node_indices[step_idx + 1]
+
+                    # IMPORTANT: Ignore self-hops (staying at same camera station)
+                    if c1_idx == c2_idx:
+                        continue
+
                     p1 = nodes_xy[c1_idx]
                     p2 = nodes_xy[c2_idx]
 
@@ -169,7 +185,8 @@ class MapVisualizer:
                     curve_offset = (base_offset * (count + 1)) if is_forward else (-base_offset * (count + 1))
 
                     cx, cy = self._get_curved_control_point(p1, p2, offset=curve_offset)
-                    hop_splines.append((p1, (cx, cy), p2, route[step_idx + 1], step_idx + 1))
+                    hop_num = len(hop_splines) + 1
+                    hop_splines.append((p1, (cx, cy), p2, route[step_idx + 1], hop_num))
 
                     # 3A. Outer glowing translucent highway lane
                     glow_color = "#00384d" if is_forward else "#4d2800"
@@ -203,7 +220,6 @@ class MapVisualizer:
                     # 3D. Step sequence number badge at arc midpoint
                     if not is_mini:
                         mx, my = self._eval_bezier(p1, (cx, cy), p2, 0.50)
-                        hop_num = step_idx + 1
                         vtime = route[step_idx + 1].get("video_time", "")
                         badge_txt = f"Hop {hop_num}: {vtime}"
                         bw = len(badge_txt) * 6 + 10
@@ -310,8 +326,8 @@ class MapVisualizer:
                                    font=("Arial", 9, "bold" if is_visited else "normal"))
 
         # ── 6. Live Pulsing GPS Target Pin (Last Known Location) ─────────────
-        if last_known and last_known.get("camera"):
-            curr_idx = self._get_cam_idx(last_known["camera"])
+        if last_known and (last_known.get("camera") or last_known.get("camera_id") is not None):
+            curr_idx = self._get_cam_idx(last_known, camera_names)
             px, py = nodes_xy[curr_idx]
 
             pulse_r = (pulse_tick % 12) * (3 if not is_mini else 2) + node_radius
@@ -322,7 +338,8 @@ class MapVisualizer:
                 target_name = last_known.get("target_name") or "TARGET"
                 vt = last_known.get("video_time") or ""
                 time_str = f" @ {vt}" if vt else ""
-                banner_txt = f"📍 {target_name.upper()} (CURRENT: {last_known['camera']}{time_str})"
+                cam_str = last_known.get("camera") or f"Camera {curr_idx + 1}"
+                banner_txt = f"📍 {target_name.upper()} (CURRENT: {cam_str}{time_str})"
 
                 bx = px
                 by = py - node_radius - 22
@@ -333,7 +350,7 @@ class MapVisualizer:
 
         # ── 7. Origin Start Flag ─────────────────────────────────────────────
         if route and len(route) >= 1 and not is_mini:
-            orig_idx = self._get_cam_idx(route[0]["camera"])
+            orig_idx = self._get_cam_idx(route[0], camera_names)
             ox, oy = nodes_xy[orig_idx]
             orig_txt = f"🚩 START: {route[0].get('video_time', '00:00:00')}"
             obw = len(orig_txt) * 6 + 12

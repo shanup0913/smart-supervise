@@ -325,10 +325,11 @@ class VideoEngine:
         if spotted and self.scanner.last_sighting["found"]:
             self.last_spotlight_idx = slot["id"]
             self.tracker.log_sighting(
-                camera_name=self.scanner.last_sighting["camera_name"],
+                camera_name=loc_name,
                 confidence=self.scanner.last_sighting["confidence"],
                 snapshot_path=self.scanner.last_sighting.get("snapshot_path", ""),
-                video_time=cam_time_str
+                video_time=cam_time_str,
+                camera_id=slot["id"]
             )
 
         return {"id": slot["id"], "spotted": spotted, "ended": False}

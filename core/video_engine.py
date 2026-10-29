@@ -187,6 +187,20 @@ class VideoEngine:
         gs = cur_sec % 60
         return f"{gh:02d}:{gm:02d}:{gs:02d}", cur_sec
 
+    def get_progress(self):
+        """Returns (percentage: float, cur_time_str: str, max_time_str: str, summary_str: str)"""
+        cur_sec = int(self.global_clock_sec)
+        max_sec = int(self.max_video_duration)
+        if max_sec > 0:
+            pct = min(100.0, max(0.0, (self.global_clock_sec / self.max_video_duration) * 100.0))
+        else:
+            pct = 0.0
+
+        cur_str = f"{cur_sec // 3600:02d}:{(cur_sec % 3600) // 60:02d}:{cur_sec % 60:02d}"
+        max_str = f"{max_sec // 3600:02d}:{(max_sec % 3600) // 60:02d}:{max_sec % 60:02d}" if max_sec > 0 else "Live"
+        summary = f"{pct:.1f}% ({cur_str} / {max_str})" if max_sec > 0 else cur_str
+        return pct, cur_str, max_str, summary
+
     def get_speed_telemetry(self):
         """Calculates actual measured speed, steps/sec, ETA, and hardware device."""
         real_elapsed = max(0.001, time.time() - self.start_real_time) if self.is_running else 1.0
@@ -204,13 +218,16 @@ class VideoEngine:
             eta_str = "—"
 
         device_str = "⚡ NVIDIA GPU (CUDA)" if self.has_cuda else "💻 CPU (4-Core Parallel)"
+        pct, _, _, progress_summary = self.get_progress()
 
         return {
             "actual_speed": round(actual_speed, 1),
             "actual_speed_str": f"{actual_speed:.1f}x",
             "steps_per_sec": round(self.current_steps_per_sec, 1),
             "eta_str": eta_str,
-            "device": device_str
+            "device": device_str,
+            "progress_pct": round(pct, 1),
+            "progress_str": progress_summary
         }
 
     def _process_camera_slot(self, slot, global_speed, global_time_str, cur_sec):

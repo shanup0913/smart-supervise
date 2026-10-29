@@ -75,19 +75,39 @@ class SmartSuperviseApp(ctk.CTk):
             text_color=TEXT_DIM
         ).pack(side="left", padx=0, pady=10)
 
-        self.global_clock_label = ctk.CTkLabel(
-            bar, text="⏱  CLOCK: 00:00:00",
-            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            text_color=ACCENT_AMBER
-        )
-        self.global_clock_label.pack(side="right", padx=18)
-
         self.status_dot = ctk.CTkLabel(
             bar, text="●  IDLE",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=TEXT_DIM
         )
         self.status_dot.pack(side="right", padx=14)
+
+        # Video Progress Percentage & Bar in Corner
+        self.progress_container = ctk.CTkFrame(bar, fg_color="transparent")
+        self.progress_container.pack(side="right", padx=(8, 14))
+
+        self.progress_label = ctk.CTkLabel(
+            self.progress_container,
+            text="📊 Video: 0.0%",
+            font=ctk.CTkFont(family="Courier New", size=11, weight="bold"),
+            text_color=ACCENT_GREEN
+        )
+        self.progress_label.pack(side="top", anchor="e")
+
+        self.progress_bar = ctk.CTkProgressBar(
+            self.progress_container,
+            width=140, height=7, corner_radius=3,
+            progress_color=ACCENT_GREEN, fg_color=DARK_BG
+        )
+        self.progress_bar.set(0.0)
+        self.progress_bar.pack(side="top", pady=(1, 0))
+
+        self.global_clock_label = ctk.CTkLabel(
+            bar, text="⏱  CLOCK: 00:00:00",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            text_color=ACCENT_AMBER
+        )
+        self.global_clock_label.pack(side="right", padx=14)
 
     def _build_panels(self):
         main = ctk.CTkFrame(self, fg_color=DARK_BG)
@@ -116,6 +136,11 @@ class SmartSuperviseApp(ctk.CTk):
             clock_str, _ = self.video_engine.get_clock_display()
             self.global_clock_label.configure(text=f"⏱  CLOCK: {clock_str}")
 
+            # Update Corner Video Progress Percentage and Bar
+            pct, cur_str, max_str, summary = self.video_engine.get_progress()
+            self.progress_bar.set(pct / 100.0)
+            self.progress_label.configure(text=f"📊 Video: {pct:.1f}% ({cur_str})")
+
             # Update Center Video Matrix and Right Telemetry
             self.center_grid.update_view(self.video_engine)
             self.right_panel.update_view()
@@ -133,6 +158,8 @@ class SmartSuperviseApp(ctk.CTk):
     def on_scan_finished(self):
         """Callback invoked when all recorded video feeds reach their conclusion."""
         self.after(0, self.set_status, "SEARCH FINISHED — ALL FEEDS COMPLETE", ACCENT_GREEN)
+        self.after(0, self.progress_bar.set, 1.0)
+        self.after(0, self.progress_label.configure, {"text": "📊 Video: 100.0% (Finished)"})
         self.after(0, self.left_panel.start_btn.configure, {"state": "normal"})
         self.after(0, self.left_panel.stop_btn.configure, {"state": "disabled"})
 

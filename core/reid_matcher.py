@@ -28,7 +28,7 @@ class TargetMatcher:
         self.match_threshold = match_threshold
         # Auto-detect NVIDIA CUDA GPU; fall back to CPU seamlessly
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         
         # ── 1. Deep Feature Extractor (MobileNetV3) ──────────────────────────
         weights = models.MobileNet_V3_Small_Weights.DEFAULT
@@ -224,14 +224,15 @@ class TargetMatcher:
         return get_clothing_hist(upper), get_clothing_hist(lower)
 
     def _extract_deep_features(self, image_pil):
-        """Extracts 576-dimensional deep feature vector."""
-        tensor = self.transform(image_pil).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            features = self.feature_extractor(tensor)
-            pooled = self.pool(features)
-            emb = torch.flatten(pooled, 1).cpu().numpy()[0]
-        norm = np.linalg.norm(emb)
-        return emb / norm if norm > 0 else emb
+        """Extracts 576-dimensional deep feature vector (Thread-Safe)."""
+        with self._lock:
+            tensor = self.transform(image_pil).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                features = self.feature_extractor(tensor)
+                pooled = self.pool(features)
+                emb = torch.flatten(pooled, 1).cpu().numpy()[0]
+            norm = np.linalg.norm(emb)
+            return emb / norm if norm > 0 else emb
 
     def add_target_photo(self, image_path_or_crop, angle_label=None):
         """
@@ -268,8 +269,6 @@ class TargetMatcher:
         
         # 4. Thumbnail
         thumbnail = cv2.resize(image_bgr, (96, 128))
-        if len(self.target_profiles) == 0:
-            self.target_thumbnail = thumbnail
 
         profile = TargetAngleProfile(
             face_feat=face_feat,
@@ -280,7 +279,10 @@ class TargetMatcher:
             thumbnail=thumbnail,
             angle_label=angle_label
         )
-        self.target_profiles.append(profile)
+        with self._lock:
+            if len(self.target_profiles) == 0:
+                self.target_thumbnail = thumbnail
+            self.target_profiles.append(profile)
         return True
 
     def set_target_photo(self, image_path_or_crop, target_name="Target Person", angle_label="Front View"):
@@ -294,8 +296,10 @@ class TargetMatcher:
         Compares candidate against all stored reference angles in the gallery.
         Returns: (is_match: bool, best_similarity_score: float)
         """
-        if len(self.target_profiles) == 0 or candidate_bgr_crop.size == 0:
-            return False, 0.0
+        with self._lock:
+            if len(self.target_profiles) == 0 or candidate_bgr_crop.size == 0:
+                return False, 0.0
+            profiles_snapshot = list(self.target_profiles)
 
         if candidate_bgr_crop.shape[0] < 20 or candidate_bgr_crop.shape[1] < 10:
             return False, 0.0
@@ -316,7 +320,7 @@ class TargetMatcher:
 
             # Evaluate candidate against EVERY reference angle profile
             scores = []
-            for profile in self.target_profiles:
+            for profile in profiles_snapshot:
                 sim_upper = max(0.0, float(np.dot(profile.upper_color, cand_upper)))
                 sim_lower = max(0.0, float(np.dot(profile.lower_color, cand_lower)))
                 color_score = (0.55 * sim_upper) + (0.45 * sim_lower)
@@ -351,7 +355,8 @@ class TargetMatcher:
             return False, 0.0
 
     def clear_target(self):
-        """Clears all stored target profiles."""
-        self.target_name = "Target Person"
-        self.target_profiles.clear()
-        self.target_thumbnail = None
+        """Clears all stored target profiles (Thread-Safe)."""
+        with self._lock:
+            self.target_name = "Target Person"
+            self.target_profiles.clear()
+            self.target_thumbnail = None

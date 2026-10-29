@@ -446,9 +446,11 @@ class LeftPanel(ctk.CTkScrollableFrame):
         threading.Thread(target=_bg_start, daemon=True).start()
 
     def _on_stop_clicked(self):
+        self.stop_btn.configure(text="⏳ STOPPING...", state="disabled")
+        self.update_idletasks()
         self.app.video_engine.stop()
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
+        self.start_btn.configure(text="▶  START SCANNING", state="normal")
+        self.stop_btn.configure(text="■  STOP", state="disabled")
         self.app.set_status("IDLE", color=TEXT_DIM)
         self.app.center_grid.reset_tiles()
         self.reset_camera_progress()

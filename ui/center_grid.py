@@ -109,7 +109,8 @@ class CenterGrid(ctk.CTkFrame):
                 "label": vlabel,
                 "footer": footer,
                 "pbar": tile_pbar,
-                "plabel": tile_plabel
+                "plabel": tile_plabel,
+                "last_rendered_seq": -1
             })
 
         # ── View B: Single / Focused Camera Container ──
@@ -145,6 +146,8 @@ class CenterGrid(ctk.CTkFrame):
             fg_color=DARK_BG, corner_radius=8
         )
         self.single_label.pack(fill="both", expand=True, padx=2, pady=2)
+        self.last_single_rendered_seq = -1
+        self.last_single_rendered_idx = -1
 
         # ── View C: Interactive 2D Rapido Live Map Container ──
         self.map_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -326,24 +329,28 @@ class CenterGrid(ctk.CTkFrame):
                             )
                             tile["frame"].configure(border_color="#22223a", border_width=1)
 
-                        # Ultra-fast proportional OpenCV C++ resize
-                        tw = max(10, tile["label"].winfo_width() or 310)
-                        th = max(10, tile["label"].winfo_height() or 210)
-                        fh, fw = frame.shape[:2]
-                        scale = min(tw / fw, th / fh)
-                        nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
-                        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-                        frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-                        pimg = Image.fromarray(frame_rgb)
-                        cimg = ctk.CTkImage(pimg, size=(nw, nh))
-                        tile["label"].configure(image=cimg, text="")
-                        tile["label"].image = cimg
+                        # Only re-render CTkImage if a new frame sequence has arrived (prevents GDI leaks)
+                        frame_seq = state.get("frame_seq", 0)
+                        if frame_seq != tile.get("last_rendered_seq", -1):
+                            tile["last_rendered_seq"] = frame_seq
+                            tw = max(10, tile["label"].winfo_width() or 310)
+                            th = max(10, tile["label"].winfo_height() or 210)
+                            fh, fw = frame.shape[:2]
+                            scale = min(tw / fw, th / fh)
+                            nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
+                            resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                            frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                            pimg = Image.fromarray(frame_rgb)
+                            cimg = ctk.CTkImage(pimg, size=(nw, nh))
+                            tile["label"].configure(image=cimg, text="")
+                            tile["label"].image = cimg
                 elif state and not state["enabled"]:
                     tile["header"].configure(text=f"CAM {i+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
                     tile["frame"].configure(border_color="#181828", border_width=1)
                     tile["label"].configure(image=None, text=f"Camera {i+1}\n(Disabled in Settings)")
                     tile["pbar"].set(0.0)
                     tile["plabel"].configure(text="Standby", text_color=TEXT_DIM)
+                    tile["last_rendered_seq"] = -1
 
         # ── Mode B: Interactive Full Radar Map ──
         elif current_display == "map":
@@ -385,17 +392,21 @@ class CenterGrid(ctk.CTkFrame):
 
                 if state["frame"] is not None:
                     frame = state["frame"]
-                    sw = max(10, self.single_label.winfo_width() or 640)
-                    sh = max(10, self.single_label.winfo_height() or 460)
-                    fh, fw = frame.shape[:2]
-                    scale = min(sw / fw, sh / fh)
-                    nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
-                    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-                    frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-                    pimg = Image.fromarray(frame_rgb)
-                    cimg = ctk.CTkImage(pimg, size=(nw, nh))
-                    self.single_label.configure(image=cimg, text="")
-                    self.single_label.image = cimg
+                    frame_seq = state.get("frame_seq", 0)
+                    if frame_seq != self.last_single_rendered_seq or idx != self.last_single_rendered_idx:
+                        self.last_single_rendered_seq = frame_seq
+                        self.last_single_rendered_idx = idx
+                        sw = max(10, self.single_label.winfo_width() or 640)
+                        sh = max(10, self.single_label.winfo_height() or 460)
+                        fh, fw = frame.shape[:2]
+                        scale = min(sw / fw, sh / fh)
+                        nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
+                        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                        frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                        pimg = Image.fromarray(frame_rgb)
+                        cimg = ctk.CTkImage(pimg, size=(nw, nh))
+                        self.single_label.configure(image=cimg, text="")
+                        self.single_label.image = cimg
 
         self.update_last_seen_banner()
 
@@ -424,5 +435,8 @@ class CenterGrid(ctk.CTkFrame):
             tile["header"].configure(text="Standby", fg_color=CARD_BG)
             tile["frame"].configure(border_color="#22223a")
             tile["label"].configure(image=None, text="Camera Standby")
+            tile["last_rendered_seq"] = -1
         self.single_header.configure(text="Focused Camera", fg_color=CARD_BG)
         self.single_label.configure(image=None, text="No Feed Selected")
+        self.last_single_rendered_seq = -1
+        self.last_single_rendered_idx = -1

@@ -34,7 +34,7 @@ class VideoEngine:
 
         self.is_running = False
         self.worker_thread = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         # Telemetry State
         self.global_clock_sec = 0.0
@@ -152,8 +152,15 @@ class VideoEngine:
         return active_count
 
     def stop(self):
-        """Halts the worker thread and safely releases all camera resources."""
+        """Halts the worker thread safely and releases camera resources without race conditions."""
         self.is_running = False
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            try:
+                self.worker_thread.join(timeout=1.5)
+            except Exception:
+                pass
+            self.worker_thread = None
+
         with self._lock:
             for slot in self.slots:
                 if slot["cap"] is not None:
@@ -198,9 +205,13 @@ class VideoEngine:
                     pct = 0.0
                     progress_str = "0.0%"
 
+                # Return isolated copy of frame so GUI thread can resize safely
+                frame_copy = slot["current_frame"].copy() if slot["current_frame"] is not None else None
+
                 return {
                     "enabled": slot["enabled"],
-                    "frame": slot["current_frame"],
+                    "frame": frame_copy,
+                    "frame_seq": slot.get("frame_seq", 0),
                     "spotted": slot["spotted"],
                     "location": slot["location"],
                     "ended": ended,
@@ -264,75 +275,101 @@ class VideoEngine:
 
     def _process_camera_slot(self, slot, global_speed, global_time_str, cur_sec):
         """Processes a single camera stream (Runs inside parallel ThreadPool worker)."""
-        cap = slot["cap"]
-        if cap is None or not cap.isOpened() or not slot["enabled"]:
-            return None
+        try:
+            cap = slot["cap"]
+            if cap is None or not cap.isOpened() or not slot["enabled"] or not self.is_running:
+                return None
 
-        # Camera-specific playback speed
-        cam_spd = slot["speed"] or global_speed
-        cam_step_frames, _ = self.speed_map.get(cam_spd, (105, 0.002))
-        is_fast = cam_spd in ["5x", "10x", "20x", "40x"]
+            # Camera-specific playback speed
+            cam_spd = slot["speed"] or global_speed
+            cam_step_frames, _ = self.speed_map.get(cam_spd, (105, 0.002))
+            is_fast = cam_spd in ["5x", "10x", "20x", "40x"]
 
-        if slot["is_file"]:
-            slot["current_frame_pos"] += cam_step_frames
-            if slot["total_frames"] > 0 and slot["current_frame_pos"] >= slot["total_frames"]:
-                slot["ended"] = True
-                return {"id": slot["id"], "ended": True}
+            if slot["is_file"]:
+                slot["current_frame_pos"] += cam_step_frames
+                if slot["total_frames"] > 0 and slot["current_frame_pos"] >= slot["total_frames"]:
+                    slot["ended"] = True
+                    return {"id": slot["id"], "ended": True}
+                else:
+                    try:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, slot["current_frame_pos"])
+                    except Exception:
+                        pass
+
+                cam_sec = int(slot["current_frame_pos"] / max(1.0, slot["fps"]))
+                ch = cam_sec // 3600
+                cm_ = (cam_sec % 3600) // 60
+                cs = cam_sec % 60
+                cam_time_str = f"{ch:02d}:{cm_:02d}:{cs:02d}"
             else:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, slot["current_frame_pos"])
+                cam_time_str = global_time_str
 
-            cam_sec = int(slot["current_frame_pos"] / max(1.0, slot["fps"]))
-            ch = cam_sec // 3600
-            cm_ = (cam_sec % 3600) // 60
-            cs = cam_sec % 60
-            cam_time_str = f"{ch:02d}:{cm_:02d}:{cs:02d}"
-        else:
-            cam_time_str = global_time_str
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                return {"id": slot["id"], "ended": slot["is_file"]}
 
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            return {"id": slot["id"], "ended": slot["is_file"]}
+            loc_name = slot["location"].strip() or f"Camera {slot['id']+1}"
 
-        loc_name = slot["location"].strip() or f"Camera {slot['id']+1}"
+            # Smart Motion Gating (0.18ms Check)
+            should_run_ai = True
+            if is_fast and slot["is_file"]:
+                try:
+                    small_gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 90), interpolation=cv2.INTER_NEAREST)
+                    last_thumb = slot.get("last_gray_thumb")
+                    if last_thumb is not None:
+                        diff = cv2.absdiff(small_gray, last_thumb)
+                        motion_pixels = int(np.count_nonzero(diff > 22))
+                        if motion_pixels < 35 and not slot["spotted"] and (cur_sec % 4 != 0):
+                            should_run_ai = False
+                    slot["last_gray_thumb"] = small_gray
+                except Exception:
+                    pass
 
-        # Smart Motion Gating (0.18ms Check)
-        should_run_ai = True
-        if is_fast and slot["is_file"]:
-            small_gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 90), interpolation=cv2.INTER_NEAREST)
-            last_thumb = slot.get("last_gray_thumb")
-            if last_thumb is not None:
-                diff = cv2.absdiff(small_gray, last_thumb)
-                motion_pixels = int(np.count_nonzero(diff > 22))
-                if motion_pixels < 35 and not slot["spotted"] and (cur_sec % 4 != 0):
-                    should_run_ai = False
-            slot["last_gray_thumb"] = small_gray
+            if not should_run_ai:
+                # Pre-downscale preview frame in background worker to save GUI thread CPU
+                fh, fw = frame.shape[:2]
+                if fh > 480:
+                    scale = 480.0 / fh
+                    preview = cv2.resize(frame, (int(fw * scale), 480), interpolation=cv2.INTER_LINEAR)
+                else:
+                    preview = frame.copy()
+                with self._lock:
+                    slot["spotted"] = False
+                    slot["current_frame"] = preview
+                    slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+                return {"id": slot["id"], "spotted": False, "ended": False}
 
-        if not should_run_ai:
-            with self._lock:
-                slot["spotted"] = False
-                slot["current_frame"] = frame
-            return {"id": slot["id"], "spotted": False, "ended": False}
-
-        # Run AI Scanner on current frame (High speed inference)
-        annotated_frame, spotted = self.scanner.process_frame(
-            frame, camera_name=loc_name, video_time_str=cam_time_str, fast_mode=is_fast
-        )
-
-        with self._lock:
-            slot["spotted"] = spotted
-            slot["current_frame"] = annotated_frame
-
-        if spotted and self.scanner.last_sighting["found"]:
-            self.last_spotlight_idx = slot["id"]
-            self.tracker.log_sighting(
-                camera_name=loc_name,
-                confidence=self.scanner.last_sighting["confidence"],
-                snapshot_path=self.scanner.last_sighting.get("snapshot_path", ""),
-                video_time=cam_time_str,
-                camera_id=slot["id"]
+            # Run AI Scanner on current frame (High speed inference)
+            annotated_frame, spotted, match_info = self.scanner.process_frame(
+                frame, camera_name=loc_name, video_time_str=cam_time_str, fast_mode=is_fast
             )
 
-        return {"id": slot["id"], "spotted": spotted, "ended": False}
+            raw_out = annotated_frame if annotated_frame is not None else frame
+            fh, fw = raw_out.shape[:2]
+            if fh > 480:
+                scale = 480.0 / fh
+                out_frame = cv2.resize(raw_out, (int(fw * scale), 480), interpolation=cv2.INTER_LINEAR)
+            else:
+                out_frame = raw_out.copy()
+
+            with self._lock:
+                slot["spotted"] = spotted
+                slot["current_frame"] = out_frame
+                slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+
+            if spotted and match_info:
+                self.last_spotlight_idx = slot["id"]
+                self.tracker.log_sighting(
+                    camera_name=loc_name,
+                    confidence=match_info.get("confidence", 0.8),
+                    snapshot_path=match_info.get("snapshot_path", ""),
+                    video_time=cam_time_str,
+                    camera_id=slot["id"]
+                )
+
+            return {"id": slot["id"], "spotted": spotted, "ended": False}
+        except Exception:
+            return {"id": slot["id"], "spotted": False, "ended": False}
 
     def _parallel_scan_loop(self, global_speed, on_finished_callback):
         """
@@ -344,46 +381,58 @@ class VideoEngine:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             while self.is_running:
-                step_frames, sleep_time = self.speed_map.get(global_speed, (105, 0.002))
-                cur_sec = int(self.global_clock_sec)
-                gh = cur_sec // 3600
-                gm = (cur_sec % 3600) // 60
-                gs = cur_sec % 60
-                global_time_str = f"{gh:02d}:{gm:02d}:{gs:02d}"
+                try:
+                    step_frames, sleep_time = self.speed_map.get(global_speed, (105, 0.002))
+                    cur_sec = int(self.global_clock_sec)
+                    gh = cur_sec // 3600
+                    gm = (cur_sec % 3600) // 60
+                    gs = cur_sec % 60
+                    global_time_str = f"{gh:02d}:{gm:02d}:{gs:02d}"
 
-                active_slots = [s for s in self.slots if s["enabled"] and s["cap"] is not None]
-                if not active_slots:
-                    break
+                    active_slots = [s for s in self.slots if s["enabled"] and s["cap"] is not None]
+                    if not active_slots or not self.is_running:
+                        break
 
-                # Dispatch all active cameras in parallel across 4 CPU cores
-                futures = [
-                    executor.submit(self._process_camera_slot, s, global_speed, global_time_str, cur_sec)
-                    for s in active_slots
-                ]
+                    # Dispatch all active cameras in parallel across 4 CPU cores
+                    futures = [
+                        executor.submit(self._process_camera_slot, s, global_speed, global_time_str, cur_sec)
+                        for s in active_slots
+                    ]
 
-                # Wait for all 4 camera inferences in this parallel step
-                all_ended = True
-                for f in concurrent.futures.as_completed(futures):
-                    res = f.result()
-                    if res and not res.get("ended", False):
-                        all_ended = False
+                    # Wait for all camera inferences in this parallel step
+                    all_ended = True
+                    for f in concurrent.futures.as_completed(futures):
+                        try:
+                            res = f.result()
+                            if res and not res.get("ended", False):
+                                all_ended = False
+                        except Exception:
+                            pass
 
-                # Advance global clock synchronously by step interval
-                step_seconds = step_frames / 30.0
-                self.global_clock_sec += step_seconds
+                    # Advance global clock synchronously by step interval
+                    step_seconds = step_frames / 30.0
+                    self.global_clock_sec += step_seconds
 
-                # Check if all video files finished
-                if all_ended and self.max_video_duration > 0:
-                    if on_finished_callback:
-                        on_finished_callback()
-                    break
+                    # Check if all video files finished
+                    if all_ended and self.max_video_duration > 0 and self.is_running:
+                        self.is_running = False
+                        if on_finished_callback:
+                            try:
+                                on_finished_callback()
+                            except Exception:
+                                pass
+                        break
 
-                step_counter += 1
-                elapsed = time.time() - timer
-                if elapsed >= 1.0:
-                    self.current_steps_per_sec = step_counter / elapsed
-                    step_counter = 0
-                    timer = time.time()
+                    step_counter += 1
+                    elapsed = time.time() - timer
+                    if elapsed >= 1.0:
+                        self.current_steps_per_sec = step_counter / elapsed
+                        step_counter = 0
+                        timer = time.time()
 
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    if sleep_time > 0 and self.is_running:
+                        time.sleep(sleep_time)
+                except Exception:
+                    if not self.is_running:
+                        break
+                    time.sleep(0.01)

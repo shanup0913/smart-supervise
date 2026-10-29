@@ -5,9 +5,14 @@ Modular architecture: UI panels in ui/, background video streaming in core/video
 
 import sys
 import os
+import gc
+import cv2
 import threading
 import customtkinter as ctk
 from PIL import Image
+
+# Optimize OpenCV for multi-core: prevent internal thread pools from thrashing CPU
+cv2.setNumThreads(1)
 
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -56,16 +61,6 @@ class SmartSuperviseApp(ctk.CTk):
 
         # Start periodic GUI render loop (60ms ~ 16 FPS: keeps left panel scrolling silky smooth)
         self.after(60, self._render_loop)
-
-        # Background model pre-warmup so first detection is instant without UI stutter
-        def _bg_warmup():
-            try:
-                import numpy as np
-                dummy = np.zeros((64, 64, 3), dtype=np.uint8)
-                self.scanner.matcher._extract_deep_features(Image.fromarray(dummy))
-            except Exception:
-                pass
-        threading.Thread(target=_bg_warmup, daemon=True).start()
 
         # Window close handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -127,31 +122,38 @@ class SmartSuperviseApp(ctk.CTk):
         self.right_panel.grid(row=0, column=2, padx=(4, 0), pady=0, sticky="nsew")
 
     def _render_loop(self):
-        """Throttled UI refresh loop: decouples rendering from video decoding for zero lag."""
-        self.pulse_tick += 1
+        """Throttled UI refresh loop: decouples rendering from video decoding for zero lag and no GDI leaks."""
+        try:
+            self.pulse_tick += 1
 
-        if self.video_engine.is_running:
-            # Update clock in titlebar
-            clock_str, _ = self.video_engine.get_clock_display()
-            self.global_clock_label.configure(text=f"⏱  CLOCK: {clock_str}")
+            # Garbage collect periodically to ensure OS GDI handles never hit 10,000 threshold
+            if self.pulse_tick % 100 == 0:
+                gc.collect()
 
-            # Update active feeds telemetry in titlebar
-            active_slots = [s for s in self.video_engine.slots if s["enabled"]]
-            remaining_slots = [s for s in active_slots if not s["ended"]]
-            self.active_feeds_label.configure(
-                text=f"📹  FEEDS: {len(remaining_slots)}/{len(active_slots)} Active"
-            )
+            if self.video_engine.is_running:
+                # Update clock in titlebar
+                clock_str, _ = self.video_engine.get_clock_display()
+                self.global_clock_label.configure(text=f"⏱  CLOCK: {clock_str}")
 
-            # Update Center Video Matrix, Left Panel Cards, and Right Telemetry
-            self.center_grid.update_view(self.video_engine)
-            self.left_panel.update_camera_progress(self.video_engine)
-            self.right_panel.update_view()
-        elif self.center_grid.display_mode.get() == "map":
-            # Keep map animations alive even when stopped
-            self.center_grid.render_full_map()
-            self.right_panel.update_view()
+                # Update active feeds telemetry in titlebar
+                active_slots = [s for s in self.video_engine.slots if s["enabled"]]
+                remaining_slots = [s for s in active_slots if not s["ended"]]
+                self.active_feeds_label.configure(
+                    text=f"📹  FEEDS: {len(remaining_slots)}/{len(active_slots)} Active"
+                )
 
-        self.after(60, self._render_loop)
+                # Update Center Video Matrix, Left Panel Cards, and Right Telemetry
+                self.center_grid.update_view(self.video_engine)
+                self.left_panel.update_camera_progress(self.video_engine)
+                self.right_panel.update_view()
+            elif self.center_grid.display_mode.get() == "map":
+                # Keep map animations alive even when stopped
+                self.center_grid.render_full_map()
+                self.right_panel.update_view()
+        except Exception:
+            pass
+        finally:
+            self.after(60, self._render_loop)
 
     def set_status(self, text, color=TEXT_DIM):
         """Updates the status pill in the top titlebar."""
@@ -159,14 +161,19 @@ class SmartSuperviseApp(ctk.CTk):
 
     def on_scan_finished(self):
         """Callback invoked when all recorded video feeds reach their conclusion."""
-        self.after(0, self.set_status, "SEARCH FINISHED — ALL FEEDS COMPLETE", ACCENT_GREEN)
-        self.after(0, self.active_feeds_label.configure, {"text": "📹  FEEDS: All Completed"})
-        self.after(0, self.left_panel.start_btn.configure, {"state": "normal"})
-        self.after(0, self.left_panel.stop_btn.configure, {"state": "disabled"})
+        def _update_ui():
+            self.set_status("SEARCH FINISHED — ALL FEEDS COMPLETE", ACCENT_GREEN)
+            self.active_feeds_label.configure(text="📹  FEEDS: All Completed")
+            self.left_panel.start_btn.configure(state="normal")
+            self.left_panel.stop_btn.configure(state="disabled")
+        self.after(0, _update_ui)
 
     def _on_close(self):
-        """Safely stops video engine and shuts down window."""
-        self.video_engine.stop()
+        """Safely stops video engine and shuts down window without access violations."""
+        try:
+            self.video_engine.stop()
+        except Exception:
+            pass
         self.destroy()
 
 

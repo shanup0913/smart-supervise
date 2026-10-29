@@ -18,10 +18,10 @@ class LocationTracker:
     - Return Path Support: When target returns to a previous camera (Cam 2 -> Cam 1),
       records the return transit cleanly.
     - Ping-Pong Protection: Prevents single-frame false alarms from causing fake hops.
-    - Thread-Safe: Protected with threading.Lock().
+    - Thread-Safe: Protected with threading.RLock().
     """
     def __init__(self, lost_timeout_seconds=30, session_name=None):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.lost_timeout_seconds = lost_timeout_seconds
         self.session_name = session_name or datetime.now().strftime("session_%Y%m%d_%H%M%S")
 

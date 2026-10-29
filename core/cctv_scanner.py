@@ -1,6 +1,7 @@
 import cv2
 import time
 import os
+import threading
 import numpy as np
 from datetime import datetime
 from ultralytics import YOLO
@@ -33,6 +34,7 @@ class CCTVScanner:
 
         import torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._lock = threading.RLock()
 
         # Load lightweight YOLOv8 (nano model for fast CPU/GPU execution)
         self.model = YOLO(model_name)
@@ -61,27 +63,29 @@ class CCTVScanner:
         os.makedirs(self.alerts_dir, exist_ok=True)
 
     def set_person_target(self, photo_path_or_crop, person_name="Target Person", angle_label="Front View"):
-        """Sets a target person by reference photo."""
-        self.tracking_mode = "person_photo"
-        self.matcher.set_target_photo(photo_path_or_crop, target_name=person_name, angle_label=angle_label)
-        self.last_sighting["found"] = False
-        self.last_sighting["target_name"] = person_name
-        self.sightings_history.clear()
-        return True
+        """Sets a target person by reference photo (Thread-Safe)."""
+        with self._lock:
+            self.tracking_mode = "person_photo"
+            self.matcher.set_target_photo(photo_path_or_crop, target_name=person_name, angle_label=angle_label)
+            self.last_sighting["found"] = False
+            self.last_sighting["target_name"] = person_name
+            self.sightings_history.clear()
+            return True
 
     def add_person_photo(self, photo_path_or_crop, angle_label=None):
         """Adds an additional angle/pose to the target person's gallery."""
         return self.matcher.add_target_photo(photo_path_or_crop, angle_label=angle_label)
 
     def set_class_target(self, class_name="dog"):
-        """Sets tracking for an animal/intruder class (e.g. 'dog' for school safety)."""
-        self.tracking_mode = "class_alert"
-        self.target_class_name = class_name.lower()
-        self.matcher.clear_target()
-        self.last_sighting["found"] = False
-        self.last_sighting["target_name"] = f"Intruder ({class_name.capitalize()})"
-        self.sightings_history.clear()
-        return True
+        """Sets tracking for an animal/intruder class (Thread-Safe)."""
+        with self._lock:
+            self.tracking_mode = "class_alert"
+            self.target_class_name = class_name.lower()
+            self.matcher.clear_target()
+            self.last_sighting["found"] = False
+            self.last_sighting["target_name"] = f"Intruder ({class_name.capitalize()})"
+            self.sightings_history.clear()
+            return True
 
     def process_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
         """
@@ -183,45 +187,54 @@ class CCTVScanner:
                     "video_time": video_time_str
                 }
 
-        # Update Last Known Location if target was spotted
+        # Update Last Known Location if target was spotted (Thread-Safe)
+        snapshot_saved_path = ""
         if target_spotted_in_frame and best_match_info:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.last_sighting["found"] = True
-            self.last_sighting["camera_name"] = camera_name
-            self.last_sighting["timestamp"] = now_str
-            self.last_sighting["video_time"] = video_time_str or ""
-            self.last_sighting["confidence"] = best_match_info["confidence"]
-            self.last_sighting["snapshot"] = best_match_info["crop"]
-            self.last_sighting["bbox"] = best_match_info["bbox"]
-            self.last_sighting["target_name"] = best_match_info["target_name"]
-            
-            # Save sighting snapshot with burned-in timestamp
-            if not self.sightings_history or (time.time() - self.sightings_history[-1].get("time_epoch", 0)) > 2.0:
-                stamp_clean = (video_time_str or "").replace(":", "-")
-                snapshot_filename = f"sighting_{int(time.time())}_{stamp_clean}.jpg"
-                snapshot_path = os.path.join(self.alerts_dir, snapshot_filename)
+            with self._lock:
+                self.last_sighting["found"] = True
+                self.last_sighting["camera_name"] = camera_name
+                self.last_sighting["timestamp"] = now_str
+                self.last_sighting["video_time"] = video_time_str or ""
+                self.last_sighting["confidence"] = best_match_info["confidence"]
+                self.last_sighting["snapshot"] = best_match_info["crop"]
+                self.last_sighting["bbox"] = best_match_info["bbox"]
+                self.last_sighting["target_name"] = best_match_info["target_name"]
                 
-                # Burn timestamp into snapshot crop
-                snap_img = best_match_info["crop"].copy()
-                snap_h = snap_img.shape[0]
-                snap_label = f"{camera_name} | {video_time_str or now_str}"
-                cv2.rectangle(snap_img, (0, max(0, snap_h - 20)), (snap_img.shape[1], snap_h), (0, 0, 0), -1)
-                cv2.putText(snap_img, snap_label, (4, snap_h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
-                cv2.imwrite(snapshot_path, snap_img)
-                
-                entry = {
-                    "camera": camera_name,
-                    "timestamp": now_str,
-                    "video_time": video_time_str or "",
-                    "confidence": round(best_match_info["confidence"], 2),
-                    "snapshot_file": snapshot_path,
-                    "time_epoch": time.time()
-                }
-                self.sightings_history.append(entry)
+                # Save sighting snapshot with burned-in timestamp
+                if not self.sightings_history or (time.time() - self.sightings_history[-1].get("time_epoch", 0)) > 2.0:
+                    stamp_clean = (video_time_str or "").replace(":", "-")
+                    snapshot_filename = f"sighting_{int(time.time())}_{stamp_clean}.jpg"
+                    snapshot_path = os.path.join(self.alerts_dir, snapshot_filename)
+                    
+                    try:
+                        # Burn timestamp into snapshot crop
+                        snap_img = best_match_info["crop"].copy()
+                        snap_h = snap_img.shape[0]
+                        snap_label = f"{camera_name} | {video_time_str or now_str}"
+                        cv2.rectangle(snap_img, (0, max(0, snap_h - 20)), (snap_img.shape[1], snap_h), (0, 0, 0), -1)
+                        cv2.putText(snap_img, snap_label, (4, snap_h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+                        cv2.imwrite(snapshot_path, snap_img)
+                        snapshot_saved_path = snapshot_path
+                    except Exception:
+                        pass
+                    
+                    entry = {
+                        "camera": camera_name,
+                        "timestamp": now_str,
+                        "video_time": video_time_str or "",
+                        "confidence": round(best_match_info["confidence"], 2),
+                        "snapshot_file": snapshot_saved_path,
+                        "time_epoch": time.time()
+                    }
+                    self.sightings_history.append(entry)
+
+        if best_match_info:
+            best_match_info["snapshot_path"] = snapshot_saved_path
 
         # Overlay status bar at bottom of frame
         self._draw_status_overlay(annotated_frame, target_spotted_in_frame, camera_name, video_time_str)
-        return annotated_frame, target_spotted_in_frame
+        return annotated_frame, target_spotted_in_frame, best_match_info
 
     def _draw_status_overlay(self, frame, spotted_now, camera_name, video_time_str=None):
         """Draws a sleek status banner showing current camera, video timestamp & Last Known Location."""
@@ -241,9 +254,14 @@ class CCTVScanner:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1)
         
         # Last Known Location tag (Right)
-        if self.last_sighting["found"]:
-            vt_info = f" [{self.last_sighting.get('video_time', '')}]" if self.last_sighting.get('video_time') else ""
-            status_text = f"LAST SEEN: {self.last_sighting['camera_name']}{vt_info}"
+        with self._lock:
+            has_sighting = self.last_sighting["found"]
+            last_cam = self.last_sighting.get("camera_name", "")
+            last_vt = self.last_sighting.get("video_time", "")
+
+        if has_sighting:
+            vt_info = f" [{last_vt}]" if last_vt else ""
+            status_text = f"LAST SEEN: {last_cam}{vt_info}"
             tag_color = (0, 255, 0) if spotted_now else (0, 200, 255)
         else:
             status_text = "SCANNING: NO MATCH YET"
@@ -252,7 +270,3 @@ class CCTVScanner:
         text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)[0]
         cv2.putText(frame, status_text, (max(10, w - text_size[0] - 12), h - 14), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, tag_color, 1)
-
-        text_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-        cv2.putText(frame, status_text, (w - text_size[0] - 15, h - 14), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, tag_color, 1)

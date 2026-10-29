@@ -1,5 +1,6 @@
 import os
 import cv2
+import threading
 import numpy as np
 import torch
 import torchvision.models as models
@@ -21,26 +22,13 @@ class TargetAngleProfile:
 class TargetMatcher:
     """
     TargetMatcher: High-Accuracy Multi-Angle Biometric Face & Clothing Re-ID Engine.
-    
-    Key Features:
-    1. Multi-Angle Gallery:
-       - Supports 1 to 4 reference photos (e.g. Front, Side Profile, Back / Walking Away).
-       - Matches candidates across all uploaded poses/angles.
-    2. Adaptive Illumination Enhancement (CLAHE):
-       - Automatically enhances dark, shadowy, or cinematic video frames (e.g. Mirzapur scenes, railway stations at night).
-    3. Multi-Stage Face Detection:
-       - Stage 1: YuNet deep face detector at native resolution.
-       - Stage 2: YuNet 2x upscale on head region.
-       - Stage 3: OpenCV Haar Cascade fallback.
-    4. Strict Biometric Verification:
-       - Different person (SFace cosine < 0.363) -> strictly <= 15% (ZERO false matches).
-       - Same person (SFace cosine >= 0.363) -> 80% to 98%.
-    5. Robust Re-ID Fallback:
-       - When face is turned away or walking backwards -> evaluates LAB clothing (65%) + silhouette (35%).
+    Supports CPU multi-core parallel execution and automatic NVIDIA CUDA GPU acceleration.
     """
     def __init__(self, match_threshold=0.55):
         self.match_threshold = match_threshold
-        self.device = torch.device("cpu")
+        # Auto-detect NVIDIA CUDA GPU; fall back to CPU seamlessly
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._lock = threading.Lock()
         
         # ── 1. Deep Feature Extractor (MobileNetV3) ──────────────────────────
         weights = models.MobileNet_V3_Small_Weights.DEFAULT
@@ -122,7 +110,7 @@ class TargetMatcher:
 
     def _detect_face_and_feature(self, image_bgr):
         """
-        Multi-Stage Face Detection with lighting adaptation:
+        Multi-Stage Face Detection with lighting adaptation (Thread-Safe):
         1. YuNet at native scale.
         2. YuNet on head region (upper 55% of crop) at 2x upscale.
         3. Haar Cascade as robust secondary fallback.
@@ -138,62 +126,63 @@ class TargetMatcher:
         # Pre-enhance crop if lighting is dark
         enhanced = self._enhance_lighting_if_dark(image_bgr)
             
-        # Stage 1: YuNet on native crop
-        try:
-            self.face_detector.setInputSize((w, h))
-            _, faces = self.face_detector.detect(enhanced)
-            if faces is not None and len(faces) > 0:
-                # Filter to upper 65% of person body with confidence >= 0.40 (prevents false stomach/shirt fold detections)
-                valid_faces = [f for f in faces if f[-1] >= 0.40 and f[1] < h * 0.65]
-                if valid_faces:
-                    best_face = max(valid_faces, key=lambda f: f[-1])
-                    aligned = self.face_recognizer.alignCrop(enhanced, best_face)
-                    feat = self.face_recognizer.feature(aligned)
-                    box = (int(best_face[0]), int(best_face[1]), int(best_face[2]), int(best_face[3]))
-                    return feat, box
-        except Exception:
-            pass
-
-        # Stage 2: YuNet on head region (upper 55%) at 2x upscale
-        try:
-            head_h = int(h * 0.55)
-            if head_h >= 20:
-                head_crop = enhanced[:head_h, :]
-                scaled_head = cv2.resize(head_crop, (w * 2, head_h * 2))
-                self.face_detector.setInputSize((w * 2, head_h * 2))
-                _, faces = self.face_detector.detect(scaled_head)
+        with self._lock:
+            # Stage 1: YuNet on native crop
+            try:
+                self.face_detector.setInputSize((w, h))
+                _, faces = self.face_detector.detect(enhanced)
                 if faces is not None and len(faces) > 0:
-                    valid_faces = [f for f in faces if f[-1] >= 0.40]
+                    # Filter to upper 65% of person body with confidence >= 0.40 (prevents false stomach/shirt fold detections)
+                    valid_faces = [f for f in faces if f[-1] >= 0.40 and f[1] < h * 0.65]
                     if valid_faces:
                         best_face = max(valid_faces, key=lambda f: f[-1])
-                        aligned = self.face_recognizer.alignCrop(scaled_head, best_face)
+                        aligned = self.face_recognizer.alignCrop(enhanced, best_face)
                         feat = self.face_recognizer.feature(aligned)
-                        box = (int(best_face[0]/2), int(best_face[1]/2), int(best_face[2]/2), int(best_face[3]/2))
+                        box = (int(best_face[0]), int(best_face[1]), int(best_face[2]), int(best_face[3]))
                         return feat, box
-        except Exception:
-            pass
-
-        # Stage 3: Haar Cascade fallback
-        if self.haar_cascade is not None:
-            try:
-                gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
-                haar_faces = self.haar_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(24, 24))
-                if len(haar_faces) > 0:
-                    hx, hy, hw, hh = max(haar_faces, key=lambda b: b[2] * b[3])
-                    f_arr = np.array([
-                        hx, hy, hw, hh,
-                        hx + hw * 0.3, hy + hh * 0.35,
-                        hx + hw * 0.7, hy + hh * 0.35,
-                        hx + hw * 0.5, hy + hh * 0.55,
-                        hx + hw * 0.35, hy + hh * 0.75,
-                        hx + hw * 0.65, hy + hh * 0.75,
-                        0.90
-                    ], dtype=np.float32)
-                    aligned = self.face_recognizer.alignCrop(enhanced, f_arr)
-                    feat = self.face_recognizer.feature(aligned)
-                    return feat, (hx, hy, hw, hh)
             except Exception:
                 pass
+
+            # Stage 2: YuNet on head region (upper 55%) at 2x upscale
+            try:
+                head_h = int(h * 0.55)
+                if head_h >= 20:
+                    head_crop = enhanced[:head_h, :]
+                    scaled_head = cv2.resize(head_crop, (w * 2, head_h * 2))
+                    self.face_detector.setInputSize((w * 2, head_h * 2))
+                    _, faces = self.face_detector.detect(scaled_head)
+                    if faces is not None and len(faces) > 0:
+                        valid_faces = [f for f in faces if f[-1] >= 0.40]
+                        if valid_faces:
+                            best_face = max(valid_faces, key=lambda f: f[-1])
+                            aligned = self.face_recognizer.alignCrop(scaled_head, best_face)
+                            feat = self.face_recognizer.feature(aligned)
+                            box = (int(best_face[0]/2), int(best_face[1]/2), int(best_face[2]/2), int(best_face[3]/2))
+                            return feat, box
+            except Exception:
+                pass
+
+            # Stage 3: Haar Cascade fallback
+            if self.haar_cascade is not None:
+                try:
+                    gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+                    haar_faces = self.haar_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(24, 24))
+                    if len(haar_faces) > 0:
+                        hx, hy, hw, hh = max(haar_faces, key=lambda b: b[2] * b[3])
+                        f_arr = np.array([
+                            hx, hy, hw, hh,
+                            hx + hw * 0.3, hy + hh * 0.35,
+                            hx + hw * 0.7, hy + hh * 0.35,
+                            hx + hw * 0.5, hy + hh * 0.55,
+                            hx + hw * 0.35, hy + hh * 0.75,
+                            hx + hw * 0.65, hy + hh * 0.75,
+                            0.90
+                        ], dtype=np.float32)
+                        aligned = self.face_recognizer.alignCrop(enhanced, f_arr)
+                        feat = self.face_recognizer.feature(aligned)
+                        return feat, (hx, hy, hw, hh)
+                except Exception:
+                    pass
 
         return None, None
 
@@ -336,10 +325,11 @@ class TargetMatcher:
                 sim_deep = max(0.0, min(1.0, (raw_deep_sim - 0.25) / 0.60))
 
                 if profile.has_face and self.face_recognizer is not None and cand_face_feat is not None:
-                    # Both faces visible: Biometric SFace comparison
-                    raw_face_cos = self.face_recognizer.match(
-                        profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
-                    )
+                    # Both faces visible: Biometric SFace comparison (Thread-safe)
+                    with self._lock:
+                        raw_face_cos = self.face_recognizer.match(
+                            profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
+                        )
                     if raw_face_cos < 0.363:
                         # Confirmed DIFFERENT person -> capped <= 15%
                         score = max(0.0, (raw_face_cos / 0.363) * 0.15) if raw_face_cos > 0 else 0.02

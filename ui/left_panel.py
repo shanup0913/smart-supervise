@@ -26,7 +26,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.tracking_mode = ctk.StringVar(value="person")
         self.target_name_var = ctk.StringVar(value="Target Person")
         self.class_name_var = ctk.StringVar(value="dog")
-        self.global_speed_var = ctk.StringVar(value="30x")
+        self.global_speed_var = ctk.StringVar(value="10x")
 
         # Camera Slot UI bindings
         default_locations = [
@@ -42,7 +42,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
                 "enabled": ctk.BooleanVar(value=(i == 0)),
                 "source_var": ctk.StringVar(value="0" if i == 0 else ""),
                 "location_var": ctk.StringVar(value=default_locations[i]),
-                "speed_var": ctk.StringVar(value="30x")
+                "speed_var": ctk.StringVar(value="10x")
             })
 
         self._build_ui()
@@ -160,7 +160,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
 
         self.speed_selector = ctk.CTkSegmentedButton(
             speed_frame,
-            values=["1x", "4x", "10x", "30x", "60x"],
+            values=["1x", "5x", "10x", "20x", "40x"],
             variable=self.global_speed_var,
             command=self._on_global_speed_change,
             selected_color=ACCENT_BLUE,
@@ -170,7 +170,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.speed_selector.pack(fill="x", padx=8, pady=(2, 4))
 
         ctk.CTkLabel(
-            speed_frame, text="30x = ~2 min / hr  |  60x = ~1 min / hr",
+            speed_frame, text="10x = ~4 min / 40m  |  20x = ~2 min  |  40x = ~1 min",
             font=ctk.CTkFont(size=9),
             text_color="#9999bb"
         ).pack(padx=8, pady=(0, 4), anchor="w")
@@ -228,7 +228,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
             ctk.CTkLabel(spd_row, text="Speed:", font=ctk.CTkFont(size=9, weight="bold"), text_color=TEXT_DIM).pack(side="left", padx=(0, 4))
             ctk.CTkSegmentedButton(
                 spd_row,
-                values=["1x", "4x", "10x", "30x", "60x"],
+                values=["1x", "5x", "10x", "20x", "40x"],
                 variable=cam["speed_var"],
                 selected_color=ACCENT_BLUE,
                 height=20,

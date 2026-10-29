@@ -31,7 +31,10 @@ class CCTVScanner:
             if os.path.exists(candidate):
                 model_name = candidate
 
-        # Load lightweight YOLOv8 (nano model for fast CPU execution)
+        import torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Load lightweight YOLOv8 (nano model for fast CPU/GPU execution)
         self.model = YOLO(model_name)
         self.matcher = TargetMatcher(match_threshold=match_threshold)
         
@@ -105,9 +108,9 @@ class CCTVScanner:
 
         # Run YOLO detection with high sensitivity (imgsz=320 during fast search for 4.6x speedup)
         if fast_mode:
-            results = self.model(frame, verbose=False, conf=0.20, imgsz=320)[0]
+            results = self.model(frame, verbose=False, conf=0.20, imgsz=320, device=self.device)[0]
         else:
-            results = self.model(frame, verbose=False, conf=0.20)[0]
+            results = self.model(frame, verbose=False, conf=0.20, device=self.device)[0]
         
         for box in results.boxes:
             cls_id = int(box.cls[0].item())

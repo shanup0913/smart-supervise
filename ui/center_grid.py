@@ -171,10 +171,16 @@ class CenterGrid(ctk.CTkFrame):
     def update_view(self, video_engine):
         current_display = self.display_mode.get()
 
-        # Update FPS label
-        fps = video_engine.current_fps
+        # Update Actual Measured Speed & Telemetry
+        telem = video_engine.get_speed_telemetry()
         spd = self.app.left_panel.global_speed_var.get()
-        self.fps_label.configure(text=f"Speed: {spd} | FPS: {fps:.1f}")
+        telemetry_text = (
+            f"⚡ Actual: {telem['actual_speed_str']} (Target: {spd}) | "
+            f"{telem['steps_per_sec']} steps/s | "
+            f"ETA: {telem['eta_str']} | "
+            f"{telem['device']}"
+        )
+        self.fps_label.configure(text=telemetry_text)
 
         # ── Mode A: 2x2 Fixed Grid ──
         if current_display == "grid":

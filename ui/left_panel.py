@@ -5,6 +5,7 @@ per-camera speed selectors, and scan controls.
 
 import os
 import cv2
+import threading
 from PIL import Image
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -310,16 +311,23 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.app.scanner.matcher.clear_target()
         self.app.scanner.matcher.target_name = name
         self.app.tracker.set_target(name)
-        
-        for path in paths:
-            img_bgr = cv2.imread(path)
-            if img_bgr is not None:
-                self.app.scanner.add_person_photo(img_bgr)
-        
-        self.app.scanner.last_sighting["found"] = False
-        self.app.scanner.last_sighting["target_name"] = name
-        self.app.scanner.sightings_history.clear()
-        self._refresh_gallery_display()
+        self.app.set_status("Analyzing biometric facial landmarks & clothing colors...", color=ACCENT_AMBER)
+        self.update_idletasks()
+
+        def _bg_upload():
+            for path in paths:
+                img_bgr = cv2.imread(path)
+                if img_bgr is not None:
+                    self.app.scanner.add_person_photo(img_bgr)
+
+            def _finish():
+                self.app.scanner.last_sighting["found"] = False
+                self.app.scanner.last_sighting["target_name"] = name
+                self.app.scanner.sightings_history.clear()
+                self._refresh_gallery_display()
+            self.app.after(0, _finish)
+
+        threading.Thread(target=_bg_upload, daemon=True).start()
 
     def _add_angle_photo(self):
         path = filedialog.askopenfilename(
@@ -330,8 +338,14 @@ class LeftPanel(ctk.CTkScrollableFrame):
             return
         img_bgr = cv2.imread(path)
         if img_bgr is not None:
-            self.app.scanner.add_person_photo(img_bgr)
-            self._refresh_gallery_display()
+            self.app.set_status("Analyzing pose angle...", color=ACCENT_AMBER)
+            self.update_idletasks()
+
+            def _bg_add():
+                self.app.scanner.add_person_photo(img_bgr)
+                self.app.after(0, self._refresh_gallery_display)
+
+            threading.Thread(target=_bg_add, daemon=True).start()
 
     def _clear_target_gallery(self):
         self.app.scanner.matcher.clear_target()
@@ -403,17 +417,33 @@ class LeftPanel(ctk.CTkScrollableFrame):
             self.app.scanner.set_class_target(class_name)
             self.app.tracker.set_target(f"{class_name.capitalize()} Intrusion Detection")
 
-        try:
-            active_count = self.app.video_engine.start(
-                global_speed=self.global_speed_var.get(),
-                on_finished_callback=self.app.on_scan_finished
-            )
-            self.start_btn.configure(state="disabled")
-            self.stop_btn.configure(state="normal")
-            speed = self.global_speed_var.get()
-            self.app.set_status(f"SYNCHRONIZED SEARCH: {active_count} CAMERAS @ {speed}", color=ACCENT_GREEN)
-        except Exception as e:
-            messagebox.showerror("Start Error", str(e))
+        # Show immediate feedback so GUI never freezes or shows "Not Responding"
+        self.start_btn.configure(text="⏳  OPENING FEEDS...", state="disabled")
+        self.app.set_status("INITIALIZING CAMERA STREAMS...", color=ACCENT_AMBER)
+        self.update_idletasks()
+
+        def _bg_start():
+            try:
+                active_count = self.app.video_engine.start(
+                    global_speed=self.global_speed_var.get(),
+                    on_finished_callback=self.app.on_scan_finished
+                )
+                def _success():
+                    self.start_btn.configure(text="▶  START SCANNING", state="disabled")
+                    self.stop_btn.configure(state="normal")
+                    speed = self.global_speed_var.get()
+                    self.app.set_status(f"SYNCHRONIZED SEARCH: {active_count} CAMERAS @ {speed}", color=ACCENT_GREEN)
+                self.app.after(0, _success)
+            except Exception as e:
+                err_msg = str(e)
+                def _err():
+                    self.start_btn.configure(text="▶  START SCANNING", state="normal")
+                    self.stop_btn.configure(state="disabled")
+                    self.app.set_status("STREAM CONNECTION ERROR", color=ACCENT_RED)
+                    messagebox.showerror("Start Error", err_msg)
+                self.app.after(0, _err)
+
+        threading.Thread(target=_bg_start, daemon=True).start()
 
     def _on_stop_clicked(self):
         self.app.video_engine.stop()

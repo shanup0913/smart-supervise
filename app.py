@@ -5,7 +5,9 @@ Modular architecture: UI panels in ui/, background video streaming in core/video
 
 import sys
 import os
+import threading
 import customtkinter as ctk
+from PIL import Image
 
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -54,6 +56,16 @@ class SmartSuperviseApp(ctk.CTk):
 
         # Start periodic GUI render loop (60ms ~ 16 FPS: keeps left panel scrolling silky smooth)
         self.after(60, self._render_loop)
+
+        # Background model pre-warmup so first detection is instant without UI stutter
+        def _bg_warmup():
+            try:
+                import numpy as np
+                dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+                self.scanner.matcher._extract_deep_features(Image.fromarray(dummy))
+            except Exception:
+                pass
+        threading.Thread(target=_bg_warmup, daemon=True).start()
 
         # Window close handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)

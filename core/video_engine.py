@@ -166,16 +166,48 @@ class VideoEngine:
                 slot["current_frame"] = None
 
     def get_slot_state(self, idx):
-        """Returns thread-safe snapshot of slot state for GUI rendering."""
+        """Returns thread-safe snapshot of slot state for GUI rendering with per-camera progress."""
         if 0 <= idx < len(self.slots):
             with self._lock:
                 slot = self.slots[idx]
+                is_file = slot["is_file"]
+                tot_frames = slot["total_frames"]
+                cur_pos = slot["current_frame_pos"]
+                fps = max(1.0, slot["fps"])
+                ended = slot["ended"]
+
+                if not slot["enabled"]:
+                    pct = 0.0
+                    progress_str = "Disabled"
+                elif not is_file:
+                    pct = 100.0
+                    progress_str = "Live Stream"
+                elif ended or (tot_frames > 0 and cur_pos >= tot_frames):
+                    pct = 100.0
+                    tot_sec = int(slot["duration_sec"]) if slot["duration_sec"] > 0 else int(tot_frames / fps)
+                    tot_m, tot_s = tot_sec // 60, tot_sec % 60
+                    progress_str = f"100% ({tot_m:02d}:{tot_s:02d})"
+                elif tot_frames > 0:
+                    pct = min(99.9, max(0.0, (cur_pos / tot_frames) * 100.0))
+                    cur_sec = int(cur_pos / fps)
+                    tot_sec = int(slot["duration_sec"]) if slot["duration_sec"] > 0 else int(tot_frames / fps)
+                    cur_m, cur_s = cur_sec // 60, cur_sec % 60
+                    tot_m, tot_s = tot_sec // 60, tot_sec % 60
+                    progress_str = f"{pct:.1f}% ({cur_m:02d}:{cur_s:02d} / {tot_m:02d}:{tot_s:02d})"
+                else:
+                    pct = 0.0
+                    progress_str = "0.0%"
+
                 return {
                     "enabled": slot["enabled"],
                     "frame": slot["current_frame"],
                     "spotted": slot["spotted"],
                     "location": slot["location"],
-                    "ended": slot["ended"]
+                    "ended": ended,
+                    "is_file": is_file,
+                    "progress_pct": pct,
+                    "progress_str": progress_str,
+                    "speed": slot["speed"]
                 }
         return None
 

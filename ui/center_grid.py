@@ -79,6 +79,24 @@ class CenterGrid(ctk.CTkFrame):
             )
             hdr.pack(fill="x", padx=2, pady=(2, 0))
 
+            # Per-camera individual progress footer
+            footer = ctk.CTkFrame(tile_card, fg_color="#121220", height=20, corner_radius=4)
+            footer.pack(fill="x", side="bottom", padx=2, pady=(0, 2))
+
+            tile_pbar = ctk.CTkProgressBar(
+                footer, height=5, corner_radius=3,
+                progress_color=ACCENT_GREEN, fg_color="#202036"
+            )
+            tile_pbar.set(0.0)
+            tile_pbar.pack(side="left", fill="x", expand=True, padx=(6, 6), pady=3)
+
+            tile_plabel = ctk.CTkLabel(
+                footer, text="0.0%",
+                font=ctk.CTkFont(family="Courier New", size=9, weight="bold"),
+                text_color=TEXT_DIM
+            )
+            tile_plabel.pack(side="right", padx=(0, 6))
+
             vlabel = ctk.CTkLabel(
                 tile_card, text=f"Camera {i+1}\n(Standby / Disabled)",
                 font=ctk.CTkFont(size=11), text_color=TEXT_DIM
@@ -88,7 +106,10 @@ class CenterGrid(ctk.CTkFrame):
             self.tiles.append({
                 "frame": tile_card,
                 "header": hdr,
-                "label": vlabel
+                "label": vlabel,
+                "footer": footer,
+                "pbar": tile_pbar,
+                "plabel": tile_plabel
             })
 
         # ── View B: Single / Focused Camera Container ──
@@ -100,6 +121,24 @@ class CenterGrid(ctk.CTkFrame):
             text_color=TEXT_LIGHT
         )
         self.single_header.pack(fill="x", padx=2, pady=(2, 4))
+
+        self.single_footer = ctk.CTkFrame(self.single_container, fg_color="#121220", height=24, corner_radius=6)
+        self.single_footer.pack(fill="x", side="bottom", padx=2, pady=(0, 4))
+
+        self.single_pbar = ctk.CTkProgressBar(
+            self.single_footer, height=7, corner_radius=4,
+            progress_color=ACCENT_GREEN, fg_color="#202036"
+        )
+        self.single_pbar.set(0.0)
+        self.single_pbar.pack(side="left", fill="x", expand=True, padx=(8, 8), pady=5)
+
+        self.single_plabel = ctk.CTkLabel(
+            self.single_footer, text="0.0%",
+            font=ctk.CTkFont(family="Courier New", size=10, weight="bold"),
+            text_color=TEXT_DIM
+        )
+        self.single_plabel.pack(side="right", padx=(0, 8))
+
         self.single_label = ctk.CTkLabel(
             self.single_container, text="No Feed Selected",
             font=ctk.CTkFont(size=14), text_color=TEXT_DIM,
@@ -251,38 +290,60 @@ class CenterGrid(ctk.CTkFrame):
             for i in range(4):
                 tile = self.tiles[i]
                 state = video_engine.get_slot_state(i)
-                if state and state["enabled"] and state["frame"] is not None:
-                    frame = state["frame"]
-                    loc = state["location"]
-                    if state["spotted"]:
-                        tile["header"].configure(
-                            text=f"🚨 CAM {i+1}: {loc} [TARGET FOUND!]",
-                            fg_color="#801010", text_color="#ffffff"
-                        )
-                        tile["frame"].configure(border_color=ACCENT_GREEN, border_width=2)
-                    else:
-                        tile["header"].configure(
-                            text=f"● CAM {i+1}: {loc} (Scanning)",
-                            fg_color=CARD_BG, text_color=TEXT_LIGHT
-                        )
-                        tile["frame"].configure(border_color="#22223a", border_width=1)
+                if state and state["enabled"]:
+                    pct = state.get("progress_pct", 0.0)
+                    pstr = state.get("progress_str", "0.0%")
+                    spd = state.get("speed", "10x")
+                    ended = state.get("ended", False)
 
-                    # Ultra-fast proportional OpenCV C++ resize
-                    tw = max(10, tile["label"].winfo_width() or 310)
-                    th = max(10, tile["label"].winfo_height() or 210)
-                    fh, fw = frame.shape[:2]
-                    scale = min(tw / fw, th / fh)
-                    nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
-                    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-                    frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-                    pimg = Image.fromarray(frame_rgb)
-                    cimg = ctk.CTkImage(pimg, size=(nw, nh))
-                    tile["label"].configure(image=cimg, text="")
-                    tile["label"].image = cimg
+                    # Update individual per-camera progress footer
+                    if ended:
+                        tile["pbar"].set(1.0)
+                        tile["pbar"].configure(progress_color="#04a57a")
+                        tile["plabel"].configure(text=f"🏁 100% DONE ({pstr})", text_color="#04a57a")
+                    elif state.get("is_file", False):
+                        tile["pbar"].set(pct / 100.0)
+                        tile["pbar"].configure(progress_color=ACCENT_GREEN)
+                        tile["plabel"].configure(text=f"⚡{spd} · {pstr}", text_color=ACCENT_GREEN)
+                    else:
+                        tile["pbar"].set(1.0)
+                        tile["pbar"].configure(progress_color=ACCENT_BLUE)
+                        tile["plabel"].configure(text="🔴 LIVE FEED", text_color=ACCENT_BLUE)
+
+                    if state["frame"] is not None:
+                        frame = state["frame"]
+                        loc = state["location"]
+                        if state["spotted"]:
+                            tile["header"].configure(
+                                text=f"🚨 CAM {i+1}: {loc} [TARGET FOUND!]",
+                                fg_color="#801010", text_color="#ffffff"
+                            )
+                            tile["frame"].configure(border_color=ACCENT_GREEN, border_width=2)
+                        else:
+                            tile["header"].configure(
+                                text=f"● CAM {i+1}: {loc} (Scanning)",
+                                fg_color=CARD_BG, text_color=TEXT_LIGHT
+                            )
+                            tile["frame"].configure(border_color="#22223a", border_width=1)
+
+                        # Ultra-fast proportional OpenCV C++ resize
+                        tw = max(10, tile["label"].winfo_width() or 310)
+                        th = max(10, tile["label"].winfo_height() or 210)
+                        fh, fw = frame.shape[:2]
+                        scale = min(tw / fw, th / fh)
+                        nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
+                        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                        frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                        pimg = Image.fromarray(frame_rgb)
+                        cimg = ctk.CTkImage(pimg, size=(nw, nh))
+                        tile["label"].configure(image=cimg, text="")
+                        tile["label"].image = cimg
                 elif state and not state["enabled"]:
                     tile["header"].configure(text=f"CAM {i+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
                     tile["frame"].configure(border_color="#181828", border_width=1)
                     tile["label"].configure(image=None, text=f"Camera {i+1}\n(Disabled in Settings)")
+                    tile["pbar"].set(0.0)
+                    tile["plabel"].configure(text="Standby", text_color=TEXT_DIM)
 
         # ── Mode B: Interactive Full Radar Map ──
         elif current_display == "map":
@@ -298,6 +359,25 @@ class CenterGrid(ctk.CTkFrame):
             state = video_engine.get_slot_state(idx)
             if state:
                 loc = state["location"]
+                pct = state.get("progress_pct", 0.0)
+                pstr = state.get("progress_str", "0.0%")
+                spd = state.get("speed", "10x")
+                ended = state.get("ended", False)
+
+                # Update single view progress footer
+                if ended:
+                    self.single_pbar.set(1.0)
+                    self.single_pbar.configure(progress_color="#04a57a")
+                    self.single_plabel.configure(text=f"CAM {idx+1} 🏁 FINISHED 100% ({pstr})", text_color="#04a57a")
+                elif state.get("is_file", False):
+                    self.single_pbar.set(pct / 100.0)
+                    self.single_pbar.configure(progress_color=ACCENT_GREEN)
+                    self.single_plabel.configure(text=f"CAM {idx+1} [⚡{spd}] · {pstr}", text_color=ACCENT_GREEN)
+                else:
+                    self.single_pbar.set(1.0)
+                    self.single_pbar.configure(progress_color=ACCENT_BLUE)
+                    self.single_plabel.configure(text=f"CAM {idx+1} 🔴 LIVE STREAM", text_color=ACCENT_BLUE)
+
                 if state["spotted"]:
                     self.single_header.configure(text=f"🚨 SPOTLIGHT: CAM {idx+1} — {loc} [TARGET SPOTTED!]", fg_color="#801010")
                 else:

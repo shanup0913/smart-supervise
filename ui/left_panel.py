@@ -198,6 +198,14 @@ class LeftPanel(ctk.CTkScrollableFrame):
             )
             chk.pack(side="left")
 
+            cam_badge = ctk.CTkLabel(
+                hdr, text="Ready" if cam["enabled"].get() else "OFF",
+                font=ctk.CTkFont(family="Courier New", size=10, weight="bold"),
+                text_color=ACCENT_GREEN if cam["enabled"].get() else TEXT_DIM
+            )
+            cam_badge.pack(side="right")
+            cam["progress_badge"] = cam_badge
+
             src_row = ctk.CTkFrame(cframe, fg_color="transparent")
             src_row.pack(fill="x", padx=8, pady=(1, 2))
 
@@ -224,7 +232,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
             ).pack(padx=8, pady=(1, 3))
 
             spd_row = ctk.CTkFrame(cframe, fg_color="transparent")
-            spd_row.pack(fill="x", padx=8, pady=(0, 5))
+            spd_row.pack(fill="x", padx=8, pady=(0, 3))
             ctk.CTkLabel(spd_row, text="Speed:", font=ctk.CTkFont(size=9, weight="bold"), text_color=TEXT_DIM).pack(side="left", padx=(0, 4))
             ctk.CTkSegmentedButton(
                 spd_row,
@@ -234,6 +242,14 @@ class LeftPanel(ctk.CTkScrollableFrame):
                 height=20,
                 font=ctk.CTkFont(size=9)
             ).pack(side="left", fill="x", expand=True)
+
+            cam_pbar = ctk.CTkProgressBar(
+                cframe, height=4, corner_radius=2,
+                progress_color=ACCENT_GREEN, fg_color="#181828"
+            )
+            cam_pbar.set(0.0)
+            cam_pbar.pack(fill="x", padx=8, pady=(0, 4))
+            cam["progress_bar"] = cam_pbar
 
         # ── Start / Stop Buttons ──
         self.start_btn = ctk.CTkButton(
@@ -405,3 +421,34 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.stop_btn.configure(state="disabled")
         self.app.set_status("IDLE", color=TEXT_DIM)
         self.app.center_grid.reset_tiles()
+        self.reset_camera_progress()
+
+    def update_camera_progress(self, video_engine):
+        """Updates individual per-camera progress badges and progress bars."""
+        for i, cam in enumerate(self.cam_ui_slots):
+            state = video_engine.get_slot_state(i)
+            if not state or not state["enabled"]:
+                cam["progress_badge"].configure(text="OFF", text_color=TEXT_DIM)
+                cam["progress_bar"].set(0.0)
+            elif state.get("ended", False):
+                cam["progress_badge"].configure(text="🏁 100%", text_color="#04a57a")
+                cam["progress_bar"].set(1.0)
+                cam["progress_bar"].configure(progress_color="#04a57a")
+            elif state.get("is_file", False):
+                pct = state.get("progress_pct", 0.0)
+                cam["progress_badge"].configure(text=f"{pct:.1f}%", text_color=ACCENT_GREEN)
+                cam["progress_bar"].set(pct / 100.0)
+                cam["progress_bar"].configure(progress_color=ACCENT_GREEN)
+            else:
+                cam["progress_badge"].configure(text="LIVE", text_color=ACCENT_BLUE)
+                cam["progress_bar"].set(1.0)
+                cam["progress_bar"].configure(progress_color=ACCENT_BLUE)
+
+    def reset_camera_progress(self):
+        """Resets all camera progress badges and bars."""
+        for cam in self.cam_ui_slots:
+            if cam["enabled"].get():
+                cam["progress_badge"].configure(text="Ready", text_color=ACCENT_GREEN)
+            else:
+                cam["progress_badge"].configure(text="OFF", text_color=TEXT_DIM)
+            cam["progress_bar"].set(0.0)

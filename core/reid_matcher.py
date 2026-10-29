@@ -38,7 +38,7 @@ class TargetMatcher:
     5. Robust Re-ID Fallback:
        - When face is turned away or walking backwards -> evaluates LAB clothing (65%) + silhouette (35%).
     """
-    def __init__(self, match_threshold=0.70):
+    def __init__(self, match_threshold=0.55):
         self.match_threshold = match_threshold
         self.device = torch.device("cpu")
         
@@ -143,11 +143,14 @@ class TargetMatcher:
             self.face_detector.setInputSize((w, h))
             _, faces = self.face_detector.detect(enhanced)
             if faces is not None and len(faces) > 0:
-                best_face = max(faces, key=lambda f: f[2] * f[3])
-                aligned = self.face_recognizer.alignCrop(enhanced, best_face)
-                feat = self.face_recognizer.feature(aligned)
-                box = (int(best_face[0]), int(best_face[1]), int(best_face[2]), int(best_face[3]))
-                return feat, box
+                # Filter to upper 65% of person body with confidence >= 0.40 (prevents false stomach/shirt fold detections)
+                valid_faces = [f for f in faces if f[-1] >= 0.40 and f[1] < h * 0.65]
+                if valid_faces:
+                    best_face = max(valid_faces, key=lambda f: f[-1])
+                    aligned = self.face_recognizer.alignCrop(enhanced, best_face)
+                    feat = self.face_recognizer.feature(aligned)
+                    box = (int(best_face[0]), int(best_face[1]), int(best_face[2]), int(best_face[3]))
+                    return feat, box
         except Exception:
             pass
 
@@ -160,11 +163,13 @@ class TargetMatcher:
                 self.face_detector.setInputSize((w * 2, head_h * 2))
                 _, faces = self.face_detector.detect(scaled_head)
                 if faces is not None and len(faces) > 0:
-                    best_face = max(faces, key=lambda f: f[2] * f[3])
-                    aligned = self.face_recognizer.alignCrop(scaled_head, best_face)
-                    feat = self.face_recognizer.feature(aligned)
-                    box = (int(best_face[0]/2), int(best_face[1]/2), int(best_face[2]/2), int(best_face[3]/2))
-                    return feat, box
+                    valid_faces = [f for f in faces if f[-1] >= 0.40]
+                    if valid_faces:
+                        best_face = max(valid_faces, key=lambda f: f[-1])
+                        aligned = self.face_recognizer.alignCrop(scaled_head, best_face)
+                        feat = self.face_recognizer.feature(aligned)
+                        box = (int(best_face[0]/2), int(best_face[1]/2), int(best_face[2]/2), int(best_face[3]/2))
+                        return feat, box
         except Exception:
             pass
 
@@ -222,9 +227,10 @@ class TargetMatcher:
 
             lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
             hist = cv2.calcHist([lab], [1, 2], mask, [16, 16], [0, 256, 0, 256])
-            hist = cv2.normalize(hist, None, alpha=1.0, norm_type=cv2.NORM_L1).flatten()
+            # Gaussian blur the 16x16 histogram grid so color variations from shadows/lighting overlap smoothly
+            hist = cv2.GaussianBlur(hist, (5, 5), 1.0)
             norm = np.linalg.norm(hist)
-            return hist / norm if norm > 0 else hist
+            return (hist / norm).flatten() if norm > 0 else np.zeros(256, dtype=np.float32)
 
         return get_clothing_hist(upper), get_clothing_hist(lower)
 
@@ -327,7 +333,7 @@ class TargetMatcher:
                 color_score = (0.55 * sim_upper) + (0.45 * sim_lower)
 
                 raw_deep_sim = float(np.dot(profile.deep_emb, cand_deep))
-                sim_deep = max(0.0, min(1.0, (raw_deep_sim - 0.70) / 0.30))
+                sim_deep = max(0.0, min(1.0, (raw_deep_sim - 0.25) / 0.60))
 
                 if profile.has_face and self.face_recognizer is not None and cand_face_feat is not None:
                     # Both faces visible: Biometric SFace comparison
@@ -338,12 +344,12 @@ class TargetMatcher:
                         # Confirmed DIFFERENT person -> capped <= 15%
                         score = max(0.0, (raw_face_cos / 0.363) * 0.15) if raw_face_cos > 0 else 0.02
                     else:
-                        # Confirmed SAME person -> 80% to 98%
-                        face_calibrated = 0.75 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.25
+                        # Confirmed SAME person -> 70% to 98%
+                        face_calibrated = 0.70 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.30
                         score = (0.75 * face_calibrated) + (0.15 * color_score) + (0.10 * sim_deep)
                 else:
-                    # Face turned away / walking backwards -> evaluate clothing + appearance against this angle
-                    score = (0.65 * color_score) + (0.35 * sim_deep)
+                    # Face turned away / sunglasses / walking backwards -> evaluate clothing + appearance against this angle
+                    score = (0.55 * color_score) + (0.45 * sim_deep)
 
                 scores.append(max(0.0, min(1.0, score)))
 

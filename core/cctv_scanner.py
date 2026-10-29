@@ -21,10 +21,15 @@ class CCTVScanner:
     2. Detect specific unauthorized classes (e.g., Stray Dog, Animal Intrusion)
     3. Keep track of Last Known Location, Timestamps, and Sightings
     """
-    def __init__(self, model_name=None, match_threshold=0.72):
-        if model_name is None:
-            local_model = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "yolov8n.pt"))
+    def __init__(self, model_name=None, match_threshold=0.55):
+        models_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
+        if model_name is None or model_name == "yolov8n.pt":
+            local_model = os.path.join(models_dir, "yolov8n.pt")
             model_name = local_model if os.path.exists(local_model) else "yolov8n.pt"
+        elif not os.path.isabs(model_name) and not os.path.exists(model_name):
+            candidate = os.path.join(models_dir, model_name)
+            if os.path.exists(candidate):
+                model_name = candidate
 
         # Load lightweight YOLOv8 (nano model for fast CPU execution)
         self.model = YOLO(model_name)

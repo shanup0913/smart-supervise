@@ -94,6 +94,10 @@ class LocationTracker:
 
         return True
 
+    def get_last_known_location(self):
+        """Returns the dictionary representing the last known sighting location."""
+        return self.last_known
+
     def get_journey_route(self):
         """
         Extracts the condensed sequence of unique camera transitions.
@@ -203,6 +207,12 @@ class LocationTracker:
             "time_since_last_seen": elapsed,
             "route_summary": self.get_journey_arrow_str()
         }
+
+    def seconds_since_last_seen(self):
+        """Returns integer seconds elapsed since target was last sighted."""
+        if not self.last_known["time_epoch"]:
+            return None
+        return int(time.time() - self.last_known["time_epoch"])
 
     def is_target_lost(self):
         if not self.last_known["time_epoch"]:

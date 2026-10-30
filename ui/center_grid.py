@@ -25,18 +25,22 @@ class CenterGrid(ctk.CTkFrame):
         self._build_ui()
 
     def _build_ui(self):
-        # Top Control Bar
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=10, pady=(8, 4))
+        # ── Top Control & Responsive Telemetry Bar ──
+        ctrl_box = ctk.CTkFrame(self, fg_color="transparent")
+        ctrl_box.pack(fill="x", padx=6, pady=(6, 2))
+
+        # Row 1: View Selection Buttons
+        row1 = ctk.CTkFrame(ctrl_box, fg_color="transparent", height=28)
+        row1.pack(fill="x", pady=(0, 3))
 
         ctk.CTkLabel(
-            header, text="DISPLAY VIEW:",
+            row1, text="DISPLAY VIEW:",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=TEXT_DIM
-        ).pack(side="left")
+        ).pack(side="left", padx=(2, 6))
 
         self.view_buttons = ctk.CTkSegmentedButton(
-            header,
+            row1,
             values=["⊞ 4-Grid", "Cam 1", "Cam 2", "Cam 3", "Cam 4", "Spotlight", "🗺️ Rapido Map"],
             command=self._on_display_mode_change,
             selected_color=ACCENT_BLUE,
@@ -44,13 +48,18 @@ class CenterGrid(ctk.CTkFrame):
             font=ctk.CTkFont(size=10)
         )
         self.view_buttons.set("⊞ 4-Grid")
-        self.view_buttons.pack(side="left", padx=8)
+        self.view_buttons.pack(side="left", fill="x", expand=True)
+
+        # Row 2: Dedicated Full-Width Hardware Telemetry Strip (Never clipped on small laptop screens)
+        telem_strip = ctk.CTkFrame(ctrl_box, fg_color="#121220", corner_radius=6, height=24)
+        telem_strip.pack(fill="x", pady=(1, 2))
 
         self.fps_label = ctk.CTkLabel(
-            header, text="FPS: —",
-            font=ctk.CTkFont(size=11), text_color=TEXT_DIM
+            telem_strip, text="⚡ Speed Telemetry: Standby",
+            font=ctk.CTkFont(family="Courier New", size=10, weight="bold"),
+            text_color=ACCENT_AMBER
         )
-        self.fps_label.pack(side="right")
+        self.fps_label.pack(side="left", padx=8, pady=2)
 
         # ── View A: 2x2 Fixed-Size Grid Container ──
         self.grid_container = ctk.CTkFrame(self, fg_color="transparent")

@@ -134,6 +134,17 @@ class LeftPanel(ctk.CTkScrollableFrame):
             font=ctk.CTkFont(size=10, weight="bold")
         ).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
+        btn_row2 = ctk.CTkFrame(self.photo_frame, fg_color="transparent")
+        btn_row2.pack(fill="x", padx=8, pady=(2, 4))
+
+        ctk.CTkButton(
+            btn_row2, text="🎥 Auto 360° from Video Clip",
+            command=self._upload_360_video,
+            fg_color="#1a4066", hover_color="#24588d",
+            corner_radius=6, height=26,
+            font=ctk.CTkFont(size=10, weight="bold")
+        ).pack(fill="x", expand=True)
+
         self.clear_photos_btn = ctk.CTkButton(
             self.photo_frame, text="✕ Clear Target Gallery",
             command=self._clear_target_gallery,
@@ -389,6 +400,42 @@ class LeftPanel(ctk.CTkScrollableFrame):
                 self.app.after(0, self._refresh_gallery_display)
 
             threading.Thread(target=_bg_add, daemon=True).start()
+
+    def _upload_360_video(self):
+        path = filedialog.askopenfilename(
+            title="Select Short 360° Video Clip of Target Person (2-10s)",
+            filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv *.webm")]
+        )
+        if not path:
+            return
+
+        name = self.target_name_var.get().strip() or "Target Person"
+        self.app.tracker.set_target(name)
+        self.app.set_status("Scanning video clip & auto-extracting 360° poses (Front, Profile, Back)...", color=ACCENT_AMBER)
+        self.update_idletasks()
+
+        def _bg_extract():
+            try:
+                count = self.app.scanner.extract_360_angles_from_video(path, target_name=name)
+                def _success():
+                    self.app.scanner.last_sighting["found"] = False
+                    self.app.scanner.last_sighting["target_name"] = name
+                    self.app.scanner.sightings_history.clear()
+                    self._refresh_gallery_display()
+                    self.app.set_status(f"Target: {name} (360° Video: {count} poses extracted!)", color=ACCENT_GREEN)
+                    messagebox.showinfo(
+                        "360° Extractor Complete",
+                        f"Successfully extracted {count} distinct body angles (Front, Side, Back) from video clip!\n\nTarget is ready for high-precision search."
+                    )
+                self.app.after(0, _success)
+            except Exception as e:
+                err_text = str(e)
+                def _error():
+                    self.app.set_status("Video 360° Extraction Error", color=ACCENT_RED)
+                    messagebox.showerror("360° Video Error", f"Could not extract target from video:\n\n{err_text}")
+                self.app.after(0, _error)
+
+        threading.Thread(target=_bg_extract, daemon=True).start()
 
     def _clear_target_gallery(self):
         self.app.scanner.matcher.clear_target()

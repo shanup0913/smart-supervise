@@ -76,6 +76,137 @@ class CCTVScanner:
         """Adds an additional angle/pose to the target person's gallery."""
         return self.matcher.add_target_photo(photo_path_or_crop, angle_label=angle_label)
 
+    def extract_360_angles_from_video(self, video_path, target_name="Target Person", max_angles=4):
+        """
+        Scans a short 360° video clip (e.g. 2-10s phone video of a suspect walking/turning)
+        and automatically extracts the best Front, Side Profile, and Back angles for the Re-ID gallery.
+        """
+        if not os.path.isfile(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ConnectionError(f"Could not open video file: {video_path}")
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+        # Sample 15 to 25 candidate frames across the clip
+        sample_count = min(25, max(12, total_frames if total_frames > 0 else 20))
+        step = max(1, total_frames // sample_count) if total_frames > 0 else 5
+
+        face_candidates = []   # Frames with detected faces (Front / Profile)
+        back_candidates = []   # Frames without face (Back / Turned away)
+        all_person_crops = []
+
+        frame_idx = 0
+        while cap.isOpened() and len(all_person_crops) < 30:
+            if total_frames > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+
+            h, w = frame.shape[:2]
+            results = self.model(frame, verbose=False, conf=0.30, imgsz=320, device=self.device)[0]
+
+            for box in results.boxes:
+                cls_id = int(box.cls[0].item())
+                cls_name = self.model.names[cls_id]
+                if cls_name != "person":
+                    continue
+
+                bx1, by1, bx2, by2 = map(int, box.xyxy[0].tolist())
+                bx1, by1 = max(0, bx1), max(0, by1)
+                bx2, by2 = min(w, bx2), min(h, by2)
+                bw, bh = bx2 - bx1, by2 - by1
+                if bw < 30 or bh < 70:
+                    continue
+
+                crop = frame[by1:by2, bx1:bx2].copy()
+                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+                # Check for face in crop
+                face_feat, face_box = self.matcher._detect_face_and_feature(crop)
+
+                info = {
+                    "crop": crop,
+                    "sharpness": sharpness,
+                    "face_feat": face_feat,
+                    "face_box": face_box,
+                    "frame_pos": frame_idx,
+                    "area": bw * bh
+                }
+                all_person_crops.append(info)
+                if face_feat is not None:
+                    face_candidates.append(info)
+                else:
+                    back_candidates.append(info)
+                break  # Take primary detected person per sampled frame
+
+            frame_idx += step
+            if total_frames > 0 and frame_idx >= total_frames:
+                break
+
+        cap.release()
+
+        if not all_person_crops:
+            raise ValueError("No clear person was detected in the video clip. Please check the video.")
+
+        selected_angles = []
+
+        # 1. Best Front View (Face with highest sharpness and area)
+        if face_candidates:
+            face_candidates.sort(key=lambda c: (c["face_box"][2] * c["face_box"][3] if c["face_box"] else 0, c["sharpness"]), reverse=True)
+            front = face_candidates[0]
+            selected_angles.append((front["crop"], "Front View"))
+            face_candidates.pop(0)
+
+        # 2. Back / Walking Away View (No face visible, sharpest body)
+        if back_candidates:
+            back_candidates.sort(key=lambda c: (c["area"], c["sharpness"]), reverse=True)
+            back = back_candidates[0]
+            selected_angles.append((back["crop"], "Back / Walking"))
+            back_candidates.pop(0)
+
+        # 3. Side Profile (Face visible from an angle, or candidate separated in time)
+        if face_candidates:
+            side = face_candidates[0]
+            selected_angles.append((side["crop"], "Side Profile"))
+            face_candidates.pop(0)
+
+        # 4. Fill remaining slots with remaining diverse sharp angles
+        remaining = face_candidates + back_candidates
+        remaining.sort(key=lambda c: c["sharpness"], reverse=True)
+        angle_counter = len(selected_angles) + 1
+        for rem in remaining:
+            if len(selected_angles) >= max_angles:
+                break
+            selected_angles.append((rem["crop"], f"Angle {angle_counter} (3/4 Turn)"))
+            angle_counter += 1
+
+        # If only 1 was found, supplement from all_person_crops
+        if len(selected_angles) < max_angles and len(all_person_crops) > len(selected_angles):
+            for cand in all_person_crops:
+                if len(selected_angles) >= max_angles:
+                    break
+                if not any(np.array_equal(cand["crop"], sa[0]) for sa in selected_angles):
+                    selected_angles.append((cand["crop"], f"Angle {len(selected_angles)+1}"))
+
+        # Clear existing target and set the new extracted profiles
+        with self._lock:
+            self.tracking_mode = "person_photo"
+            self.matcher.clear_target()
+            self.matcher.target_name = target_name
+            self.last_sighting["found"] = False
+            self.last_sighting["target_name"] = target_name
+            self.sightings_history.clear()
+            for crop, label in selected_angles:
+                self.matcher.add_target_photo(crop, angle_label=label)
+
+        return len(selected_angles)
+
     def set_class_target(self, class_name="dog"):
         """Sets tracking for an animal/intruder class (Thread-Safe)."""
         with self._lock:

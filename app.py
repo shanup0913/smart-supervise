@@ -46,6 +46,7 @@ class SmartSuperviseApp(ctk.CTk):
         self.configure(fg_color=DARK_BG)
 
         # Core Engines
+        self._is_closing = False
         self.scanner = CCTVScanner()
         self.tracker = LocationTracker(lost_timeout_seconds=30)
         self.map_visualizer = MapVisualizer()
@@ -123,6 +124,8 @@ class SmartSuperviseApp(ctk.CTk):
 
     def _render_loop(self):
         """Throttled UI refresh loop: decouples rendering from video decoding for zero lag and no GDI leaks."""
+        if getattr(self, "_is_closing", False):
+            return
         try:
             self.pulse_tick += 1
 
@@ -153,7 +156,11 @@ class SmartSuperviseApp(ctk.CTk):
         except Exception:
             pass
         finally:
-            self.after(60, self._render_loop)
+            if not getattr(self, "_is_closing", False):
+                try:
+                    self.after(60, self._render_loop)
+                except Exception:
+                    pass
 
     def set_status(self, text, color=TEXT_DIM):
         """Updates the status pill in the top titlebar."""
@@ -162,22 +169,35 @@ class SmartSuperviseApp(ctk.CTk):
     def on_scan_finished(self):
         """Callback invoked when all recorded video feeds reach their conclusion."""
         def _update_ui():
+            if getattr(self, "_is_closing", False):
+                return
             self.set_status("SEARCH FINISHED — ALL FEEDS COMPLETE", ACCENT_GREEN)
             self.active_feeds_label.configure(text="📹  FEEDS: All Completed")
             self.left_panel.start_btn.configure(state="normal")
             self.left_panel.stop_btn.configure(state="disabled")
-        self.after(0, _update_ui)
+        try:
+            self.after(0, _update_ui)
+        except Exception:
+            pass
 
     def _on_close(self):
         """Safely stops video engine and shuts down window without access violations."""
+        self._is_closing = True
         try:
             self.video_engine.stop()
         except Exception:
             pass
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
 
 # ─── Application Entry Point ─────────────────────────────────────────────────
 if __name__ == "__main__":
-    app = SmartSuperviseApp()
-    app.mainloop()
+    try:
+        app = SmartSuperviseApp()
+        app.mainloop()
+    except KeyboardInterrupt:
+        print("\n[INFO] Smart Supervise closed cleanly (Ctrl+C).")
+        sys.exit(0)

@@ -28,6 +28,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.target_name_var = ctk.StringVar(value="Target Person")
         self.class_name_var = ctk.StringVar(value="dog")
         self.global_speed_var = ctk.StringVar(value="10x")
+        self.match_sensitivity_var = ctk.StringVar(value="Strict (70%)")
 
         # Camera Slot UI bindings
         default_locations = [
@@ -149,7 +150,35 @@ class LeftPanel(ctk.CTkScrollableFrame):
             width=210, height=26, fg_color=DARK_BG, border_color=ACCENT_BLUE
         ).pack(pady=(1, 6), padx=8)
 
-        # ── 2. Fast Search Speed ──
+        # ── 2. Match Sensitivity (Precision vs Recall) ──
+        sens_frame = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=8)
+        sens_frame.pack(fill="x", padx=4, pady=(0, 6))
+
+        ctk.CTkLabel(
+            sens_frame, text="🎯 TARGET MATCH SENSITIVITY",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=ACCENT_AMBER
+        ).pack(pady=(4, 2), padx=8, anchor="w")
+
+        self.sens_selector = ctk.CTkSegmentedButton(
+            sens_frame,
+            values=["Strict (70%)", "Balanced (60%)", "Flexible (50%)"],
+            variable=self.match_sensitivity_var,
+            command=self._on_sensitivity_change,
+            selected_color=ACCENT_BLUE,
+            height=24,
+            font=ctk.CTkFont(size=10)
+        )
+        self.sens_selector.pack(fill="x", padx=8, pady=(2, 4))
+
+        self.sens_hint_label = ctk.CTkLabel(
+            sens_frame, text="Strict: Zero false alarms (Ignores hands & random clothes)",
+            font=ctk.CTkFont(size=9),
+            text_color="#9999bb"
+        )
+        self.sens_hint_label.pack(padx=8, pady=(0, 4), anchor="w")
+
+        # ── 3. Fast Search Speed ──
         speed_frame = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=8)
         speed_frame.pack(fill="x", padx=4, pady=(0, 6))
 
@@ -285,6 +314,20 @@ class LeftPanel(ctk.CTkScrollableFrame):
         for cam in self.cam_ui_slots:
             cam["speed_var"].set(value)
 
+    def _on_sensitivity_change(self, value):
+        if "Strict" in value or "70" in value:
+            self.app.scanner.matcher.match_threshold = 0.70
+            self.sens_hint_label.configure(text="Strict: Zero false alarms (Ignores hands & random clothes)")
+            self.app.set_status("Target Sensitivity: STRICT (70% - Zero false alarms)", color=ACCENT_GREEN)
+        elif "Balanced" in value or "60" in value:
+            self.app.scanner.matcher.match_threshold = 0.60
+            self.sens_hint_label.configure(text="Balanced: Standard CCTV tracking (Face + Clothes)")
+            self.app.set_status("Target Sensitivity: BALANCED (60% threshold)", color=ACCENT_BLUE)
+        else:
+            self.app.scanner.matcher.match_threshold = 0.50
+            self.sens_hint_label.configure(text="Flexible: High recall for distant or blurry cameras")
+            self.app.set_status("Target Sensitivity: FLEXIBLE (50% threshold)", color=ACCENT_AMBER)
+
     def _browse_camera_video(self, slot_idx):
         path = filedialog.askopenfilename(
             title=f"Select Video File for Camera {slot_idx+1}",
@@ -395,6 +438,15 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.app.set_status(f"Target: {name} ({count} poses/angles loaded, {faces} with biometric face)", color=ACCENT_GREEN)
 
     def _on_start_clicked(self):
+        # Sync sensitivity threshold
+        sens_val = self.match_sensitivity_var.get()
+        if "Strict" in sens_val or "70" in sens_val:
+            self.app.scanner.matcher.match_threshold = 0.70
+        elif "Balanced" in sens_val or "60" in sens_val:
+            self.app.scanner.matcher.match_threshold = 0.60
+        else:
+            self.app.scanner.matcher.match_threshold = 0.50
+
         # Sync slot configurations to video engine
         for i, cam in enumerate(self.cam_ui_slots):
             self.app.video_engine.configure_slot(

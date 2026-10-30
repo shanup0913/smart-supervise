@@ -24,7 +24,7 @@ class TargetMatcher:
     TargetMatcher: High-Accuracy Multi-Angle Biometric Face & Clothing Re-ID Engine.
     Supports CPU multi-core parallel execution and automatic NVIDIA CUDA GPU acceleration.
     """
-    def __init__(self, match_threshold=0.55):
+    def __init__(self, match_threshold=0.68):
         self.match_threshold = match_threshold
         # Auto-detect NVIDIA CUDA GPU; fall back to CPU seamlessly
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -206,20 +206,27 @@ class TargetMatcher:
             lower = image_bgr[int(h * 0.55):int(h * 0.95), :]
 
         def get_clothing_hist(crop):
-            if crop.size == 0 or crop.shape[0] < 4 or crop.shape[1] < 4:
-                return np.zeros(256, dtype=np.float32)
+            if crop.size == 0 or crop.shape[0] < 6 or crop.shape[1] < 6:
+                return np.zeros(48, dtype=np.float32)
             
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            mask = (gray < 235).astype(np.uint8) * 255
-            if cv2.countNonZero(mask) < 15:
-                mask = None
-
             lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-            hist = cv2.calcHist([lab], [1, 2], mask, [16, 16], [0, 256, 0, 256])
-            # Gaussian blur the 16x16 histogram grid so color variations from shadows/lighting overlap smoothly
-            hist = cv2.GaussianBlur(hist, (5, 5), 1.0)
-            norm = np.linalg.norm(hist)
-            return (hist / norm).flatten() if norm > 0 else np.zeros(256, dtype=np.float32)
+            # 16 bins for L (Lightness: 0..256), 16 bins for A (0..256), 16 bins for B (0..256)
+            hl = cv2.calcHist([lab], [0], None, [16], [0, 256])
+            ha = cv2.calcHist([lab], [1], None, [16], [0, 256])
+            hb = cv2.calcHist([lab], [2], None, [16], [0, 256])
+
+            # Apply 1D Gaussian smoothing along each channel for natural lighting tolerance
+            hl = cv2.GaussianBlur(hl, (1, 3), 0.8)
+            ha = cv2.GaussianBlur(ha, (1, 3), 0.8)
+            hb = cv2.GaussianBlur(hb, (1, 3), 0.8)
+
+            hl = hl / (np.linalg.norm(hl) + 1e-6)
+            ha = ha / (np.linalg.norm(ha) + 1e-6)
+            hb = hb / (np.linalg.norm(hb) + 1e-6)
+
+            sig = np.concatenate([hl.flatten(), ha.flatten(), hb.flatten()])
+            norm = np.linalg.norm(sig)
+            return (sig / norm).astype(np.float32) if norm > 0 else np.zeros(48, dtype=np.float32)
 
         return get_clothing_hist(upper), get_clothing_hist(lower)
 
@@ -301,7 +308,8 @@ class TargetMatcher:
                 return False, 0.0
             profiles_snapshot = list(self.target_profiles)
 
-        if candidate_bgr_crop.shape[0] < 20 or candidate_bgr_crop.shape[1] < 10:
+        # Stricter candidate size check: ignore tiny limb/hand fragments
+        if candidate_bgr_crop.shape[0] < 50 or candidate_bgr_crop.shape[1] < 20:
             return False, 0.0
 
         try:
@@ -323,10 +331,22 @@ class TargetMatcher:
             for profile in profiles_snapshot:
                 sim_upper = max(0.0, float(np.dot(profile.upper_color, cand_upper)))
                 sim_lower = max(0.0, float(np.dot(profile.lower_color, cand_lower)))
-                color_score = (0.55 * sim_upper) + (0.45 * sim_lower)
 
+                # Dual-zone conjunction: if either shirt OR pants is wrong color, apply quadratic penalty
+                min_color_sim = min(sim_upper, sim_lower)
+                avg_color_sim = (0.55 * sim_upper) + (0.45 * sim_lower)
+                if min_color_sim < 0.40:
+                    penalty = max(0.0, min_color_sim / 0.40)
+                    color_score = avg_color_sim * (penalty ** 2.0)
+                else:
+                    color_score = avg_color_sim
+
+                # Calibrated Deep Appearance Similarity (Distinguishes subtle clothing/geometry differences)
                 raw_deep_sim = float(np.dot(profile.deep_emb, cand_deep))
-                sim_deep = max(0.0, min(1.0, (raw_deep_sim - 0.25) / 0.60))
+                if raw_deep_sim <= 0.88:
+                    sim_deep = max(0.0, raw_deep_sim * 0.10)
+                else:
+                    sim_deep = min(1.0, 0.10 + ((raw_deep_sim - 0.88) / 0.10) * 0.90)
 
                 if profile.has_face and self.face_recognizer is not None and cand_face_feat is not None:
                     # Both faces visible: Biometric SFace comparison (Thread-safe)
@@ -335,14 +355,25 @@ class TargetMatcher:
                             profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
                         )
                     if raw_face_cos < 0.363:
-                        # Confirmed DIFFERENT person -> capped <= 15%
-                        score = max(0.0, (raw_face_cos / 0.363) * 0.15) if raw_face_cos > 0 else 0.02
+                        # Confirmed DIFFERENT person -> capped <= 12% (MISMATCH)
+                        score = max(0.0, (raw_face_cos / 0.363) * 0.12) if raw_face_cos > 0 else 0.02
                     else:
-                        # Confirmed SAME person -> 70% to 98%
-                        face_calibrated = 0.70 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.30
+                        # Confirmed SAME person -> 72% to 98%
+                        face_calibrated = 0.72 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.26
                         score = (0.75 * face_calibrated) + (0.15 * color_score) + (0.10 * sim_deep)
+
+                elif profile.has_face and cand_face_feat is None:
+                    # Reference profile has face, but candidate has NO visible face (turned away / walking back)
+                    # To eliminate false alarms on random people walking by or limbs/hands:
+                    if color_score >= 0.62 and sim_deep >= 0.55 and min_color_sim >= 0.45:
+                        # Strong agreement on BOTH shirt AND pants plus deep appearance
+                        score = min(0.72, (0.55 * color_score) + (0.45 * sim_deep))
+                    else:
+                        # Mismatched clothing or unverified body -> reject as different person
+                        score = max(0.0, min(0.35, color_score * 0.50 + sim_deep * 0.50))
+
                 else:
-                    # Face turned away / sunglasses / walking backwards -> evaluate clothing + appearance against this angle
+                    # Reference profile itself has no face (e.g. explicitly uploaded Back/Walking profile)
                     score = (0.55 * color_score) + (0.45 * sim_deep)
 
                 scores.append(max(0.0, min(1.0, score)))

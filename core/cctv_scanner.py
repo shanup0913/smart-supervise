@@ -22,7 +22,7 @@ class CCTVScanner:
     2. Detect specific unauthorized classes (e.g., Stray Dog, Animal Intrusion)
     3. Keep track of Last Known Location, Timestamps, and Sightings
     """
-    def __init__(self, model_name=None, match_threshold=0.55):
+    def __init__(self, model_name=None, match_threshold=0.68):
         models_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
         if model_name is None or model_name == "yolov8n.pt":
             local_model = os.path.join(models_dir, "yolov8n.pt")
@@ -110,11 +110,12 @@ class CCTVScanner:
         cv2.putText(annotated_frame, osd_text, (osd_x1 + 6, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 255) if video_time_str else (0, 255, 0), 1)
 
-        # Run YOLO detection with high sensitivity (imgsz=320 during fast search for 4.6x speedup)
+        # Run YOLO detection with high precision (filters out limb hallucinations and noise)
+        yolo_conf = 0.30 if fast_mode else 0.28
         if fast_mode:
-            results = self.model(frame, verbose=False, conf=0.20, imgsz=320, device=self.device)[0]
+            results = self.model(frame, verbose=False, conf=yolo_conf, imgsz=320, device=self.device)[0]
         else:
-            results = self.model(frame, verbose=False, conf=0.20, device=self.device)[0]
+            results = self.model(frame, verbose=False, conf=yolo_conf, device=self.device)[0]
         
         for box in results.boxes:
             cls_id = int(box.cls[0].item())
@@ -125,6 +126,16 @@ class CCTVScanner:
             # Clip coordinates to frame boundary
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
+            bw = x2 - x1
+            bh = y2 - y1
+
+            # Strict body geometry check: discard hands, horizontal arms, table corners, and tiny noise
+            if cls_name == "person":
+                if bw < 22 or bh < 55:
+                    continue
+                aspect = bh / max(1, bw)
+                if aspect < 0.85 and conf < 0.60:
+                    continue  # Horizontal limb, hand, or background artifact
             
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:

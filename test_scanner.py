@@ -21,7 +21,7 @@ print("Target person set: 'Lost Child'")
 synthetic_cctv_frame = np.full((480, 640, 3), 200, dtype=np.uint8)
 synthetic_cctv_frame[100:420, 240:400] = target_photo
 
-annotated, spotted = scanner.process_frame(synthetic_cctv_frame, camera_name="School Entrance Cam")
+annotated, spotted, match_info = scanner.process_frame(synthetic_cctv_frame, camera_name="School Entrance Cam")
 print(f"Frame processed! Target spotted: {spotted}")
 print(f"Last Sighting State: {scanner.last_sighting['found']}")
 print(f"Last Seen Camera: {scanner.last_sighting['camera_name']}")

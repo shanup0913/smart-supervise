@@ -28,6 +28,23 @@ class VideoEngine:
        steps-per-second, and precise ETA (Estimated Time of Arrival).
     4. Auto-Detects NVIDIA CUDA GPU: Automatically switches to GPU hardware if available.
     """
+    @staticmethod
+    def normalize_stream_source(raw_src: str) -> str:
+        """Auto-formats phone IP streams, RTSP, and local webcams."""
+        src = str(raw_src).strip()
+        if not src or src == "0":
+            return "0"
+        import re
+        ip_match = re.match(r'^(?:https?://)?(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?(?:/(.*))?$', src)
+        if ip_match:
+            ip = ip_match.group(1)
+            port = ip_match.group(2) or "8080"
+            path = ip_match.group(3)
+            if not path or path.strip() == "":
+                path = "video"
+            return f"http://{ip}:{port}/{path}"
+        return src
+
     def __init__(self, scanner, tracker):
         self.scanner = scanner
         self.tracker = tracker
@@ -55,23 +72,6 @@ class VideoEngine:
             "20x": (210, 0.001),  # 7.0s jump -> ~20x true speed (~2 min / 40 min video)
             "40x": (420, 0.001)   # 14.0s jump -> ~40x true speed (~1 min / 40 min video)
         }
-
-    @staticmethod
-    def normalize_stream_source(raw_src: str) -> str:
-        """Auto-formats phone IP streams, RTSP, and local webcams."""
-        src = str(raw_src).strip()
-        if not src or src == "0":
-            return "0"
-        import re
-        ip_match = re.match(r'^(?:https?://)?(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?(?:/(.*))?$', src)
-        if ip_match:
-            ip = ip_match.group(1)
-            port = ip_match.group(2) or "8080"
-            path = ip_match.group(3)
-            if not path or path.strip() == "":
-                path = "video"
-            return f"http://{ip}:{port}/{path}"
-        return src
 
         # 4 Camera State Slots
         default_locations = [

@@ -41,8 +41,14 @@ class SmartSuperviseApp(ctk.CTk):
 
         # Window Setup
         self.title("Smart Supervise — Time-Synchronized Multi-Camera CCTV Intelligence")
-        self.geometry("1360x780")
-        self.minsize(1050, 620)
+
+        # Responsive window sizing to fit laptop displays comfortably
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        target_w = min(1380, max(1000, screen_w - 60))
+        target_h = min(820, max(580, screen_h - 90))
+        self.geometry(f"{target_w}x{target_h}")
+        self.minsize(980, 560)
         self.configure(fg_color=DARK_BG)
 
         # Core Engines
@@ -108,7 +114,7 @@ class SmartSuperviseApp(ctk.CTk):
         main = ctk.CTkFrame(self, fg_color=DARK_BG)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        main.grid_columnconfigure(0, weight=0, minsize=290)  # Left panel
+        main.grid_columnconfigure(0, weight=0, minsize=325)  # Left panel (comfortable width)
         main.grid_columnconfigure(1, weight=1)               # Center video grid
         main.grid_columnconfigure(2, weight=0, minsize=320)  # Right panel
         main.grid_rowconfigure(0, weight=1)

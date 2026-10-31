@@ -56,6 +56,23 @@ class VideoEngine:
             "40x": (420, 0.001)   # 14.0s jump -> ~40x true speed (~1 min / 40 min video)
         }
 
+    @staticmethod
+    def normalize_stream_source(raw_src: str) -> str:
+        """Auto-formats phone IP streams, RTSP, and local webcams."""
+        src = str(raw_src).strip()
+        if not src or src == "0":
+            return "0"
+        import re
+        ip_match = re.match(r'^(?:https?://)?(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?(?:/(.*))?$', src)
+        if ip_match:
+            ip = ip_match.group(1)
+            port = ip_match.group(2) or "8080"
+            path = ip_match.group(3)
+            if not path or path.strip() == "":
+                path = "video"
+            return f"http://{ip}:{port}/{path}"
+        return src
+
         # 4 Camera State Slots
         default_locations = [
             "Camera 1 (Main Gate)",
@@ -101,19 +118,29 @@ class VideoEngine:
         active_count = 0
         self.max_video_duration = 0.0
 
+        # Set network capture options for wireless phone cameras & RTSP (3s timeout)
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;3000000|rtsp_transport;tcp"
+
         for i, slot in enumerate(self.slots):
             if slot["enabled"]:
                 raw_src = slot["source"]
-                if raw_src == "" or raw_src == "0":
+                norm_src = self.normalize_stream_source(raw_src)
+                slot["source"] = norm_src
+
+                if norm_src == "" or norm_src == "0":
                     src = 0
                     slot["is_file"] = False
                 else:
                     try:
-                        src = int(raw_src)
+                        src = int(norm_src)
                         slot["is_file"] = False
                     except ValueError:
-                        src = raw_src
-                        slot["is_file"] = os.path.isfile(raw_src)
+                        src = norm_src
+                        slot["is_file"] = os.path.isfile(norm_src)
+
+                # For live streams (phone / webcam / IP stream), lock playback speed to 1x
+                if not slot["is_file"] and slot["speed"] in ["5x", "10x", "20x", "40x"]:
+                    slot["speed"] = "1x"
 
                 cap = cv2.VideoCapture(src)
                 if cap.isOpened():

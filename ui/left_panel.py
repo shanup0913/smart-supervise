@@ -4,6 +4,8 @@ per-camera speed selectors, and scan controls.
 """
 
 import os
+import sys
+import re
 import cv2
 import threading
 from PIL import Image
@@ -20,7 +22,7 @@ from ui.theme import (
 class LeftPanel(ctk.CTkScrollableFrame):
     """Left sidebar containing target biometrics, camera slots, and control buttons."""
     def __init__(self, parent, app):
-        super().__init__(parent, fg_color=PANEL_BG, corner_radius=12, width=285)
+        super().__init__(parent, fg_color=PANEL_BG, corner_radius=12, width=315)
         self.app = app
 
         # Reactive State
@@ -248,21 +250,30 @@ class LeftPanel(ctk.CTkScrollableFrame):
             cam["progress_badge"] = cam_badge
 
             src_row = ctk.CTkFrame(cframe, fg_color="transparent")
-            src_row.pack(fill="x", padx=8, pady=(1, 2))
+            src_row.pack(fill="x", padx=6, pady=(1, 2))
 
             ctk.CTkEntry(
                 src_row, textvariable=cam["source_var"],
-                placeholder_text="0 | rtsp | video.mp4",
-                width=140, height=24, fg_color=DARK_BG, border_color=ACCENT_BLUE,
+                placeholder_text="0 | http://... | file.mp4",
+                height=24, fg_color=DARK_BG, border_color=ACCENT_BLUE,
                 font=ctk.CTkFont(size=10)
-            ).pack(side="left", padx=(0, 4))
+            ).pack(side="left", fill="x", expand=True, padx=(0, 3))
 
             ctk.CTkButton(
-                src_row, text="Browse",
+                src_row, text="📁 File",
                 command=lambda idx=i: self._browse_camera_video(idx),
-                width=65, height=24, fg_color=DARK_BG, hover_color=PANEL_BG,
+                width=52, height=24, fg_color=DARK_BG, hover_color=PANEL_BG,
                 border_width=1, border_color=ACCENT_BLUE,
-                font=ctk.CTkFont(size=10)
+                font=ctk.CTkFont(size=9, weight="bold")
+            ).pack(side="left", padx=(0, 2))
+
+            ctk.CTkButton(
+                src_row, text="📱 Phone",
+                command=lambda idx=i: self._connect_phone_modal(idx),
+                width=62, height=24, fg_color="#142838", hover_color="#1c3c54",
+                text_color=ACCENT_BLUE,
+                border_width=1, border_color=ACCENT_BLUE,
+                font=ctk.CTkFont(size=9, weight="bold")
             ).pack(side="left")
 
             ctk.CTkEntry(
@@ -313,6 +324,9 @@ class LeftPanel(ctk.CTkScrollableFrame):
         )
         self.stop_btn.pack(fill="x", padx=4, pady=(0, 8))
 
+        # Enable smooth recursive mousewheel scrolling across all child widgets
+        self._bind_mousewheel_smooth(self)
+
     def _on_mode_change(self):
         if self.tracking_mode.get() == "class":
             self.photo_frame.pack_forget()
@@ -352,6 +366,215 @@ class LeftPanel(ctk.CTkScrollableFrame):
             curr_loc = cam["location_var"].get()
             if not curr_loc or curr_loc.startswith("Camera"):
                 cam["location_var"].set(f"Camera {slot_idx+1} ({clean_name})")
+
+    def _connect_phone_modal(self, slot_idx):
+        """Interactive modal dialog to easily connect any Android or iPhone IP camera."""
+        modal = ctk.CTkToplevel(self)
+        modal.title(f"📱 Connect Phone Camera — Camera {slot_idx + 1}")
+        modal.geometry("480x450")
+        modal.resizable(False, False)
+        modal.configure(fg_color=PANEL_BG)
+        modal.transient(self.app)
+        modal.grab_set()
+
+        # Center modal over main window
+        try:
+            self.app.update_idletasks()
+            app_x = self.app.winfo_x()
+            app_y = self.app.winfo_y()
+            app_w = self.app.winfo_width()
+            app_h = self.app.winfo_height()
+            modal.geometry(f"+{max(50, app_x + (app_w - 480) // 2)}+{max(50, app_y + (app_h - 450) // 2)}")
+        except Exception:
+            pass
+
+        # Title
+        ctk.CTkLabel(
+            modal, text=f"📱 LINK WIRELESS PHONE CAMERA (CAM {slot_idx + 1})",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=ACCENT_AMBER
+        ).pack(pady=(12, 4), padx=16, anchor="w")
+
+        ctk.CTkLabel(
+            modal, text="Turn any Android or iPhone into a live wireless CCTV camera over Wi-Fi.",
+            font=ctk.CTkFont(size=11), text_color=TEXT_DIM
+        ).pack(padx=16, anchor="w")
+
+        # Step-by-Step Instruction Card
+        card = ctk.CTkFrame(modal, fg_color=CARD_BG, corner_radius=8)
+        card.pack(fill="x", padx=16, pady=(10, 8))
+
+        steps_text = (
+            "1. Connect phone & laptop to SAME Wi-Fi (or Phone Hotspot)\n"
+            "2. Open free app on your phone:\n"
+            "   • Android: 'IP Webcam' (Play Store)\n"
+            "   • iOS / Android: 'DroidCam' (App Store / Play Store)\n"
+            "3. Tap 'Start server' on phone and enter the IP shown on screen:"
+        )
+        ctk.CTkLabel(
+            card, text=steps_text,
+            font=ctk.CTkFont(size=10), text_color=TEXT_LIGHT,
+            justify="left", anchor="w"
+        ).pack(padx=10, pady=8, fill="x")
+
+        # Form variables
+        app_type_var = ctk.StringVar(value="ip_webcam")
+        ip_var = ctk.StringVar(value="192.168.1.")
+        port_var = ctk.StringVar(value="8080")
+        loc_var = ctk.StringVar(value=f"Phone Cam {slot_idx + 1}")
+
+        # If camera already has an IP, extract it
+        existing_src = self.cam_ui_slots[slot_idx]["source_var"].get().strip()
+        if existing_src.startswith("http://"):
+            m = re.match(r'http://([^:/]+):?(\d+)?', existing_src)
+            if m:
+                ip_var.set(m.group(1))
+                if m.group(2):
+                    port_var.set(m.group(2))
+
+        def _on_app_preset_change(val):
+            if val == "IP Webcam (Android)":
+                app_type_var.set("ip_webcam")
+                port_var.set("8080")
+            elif val == "DroidCam (All)":
+                app_type_var.set("droidcam")
+                port_var.set("4747")
+            else:
+                app_type_var.set("custom")
+
+        preset_btn = ctk.CTkSegmentedButton(
+            modal,
+            values=["IP Webcam (Android)", "DroidCam (All)", "Custom IP"],
+            command=_on_app_preset_change,
+            selected_color=ACCENT_BLUE,
+            font=ctk.CTkFont(size=10)
+        )
+        preset_btn.set("IP Webcam (Android)")
+        preset_btn.pack(fill="x", padx=16, pady=(0, 8))
+
+        # Input Form Card
+        form = ctk.CTkFrame(modal, fg_color=CARD_BG, corner_radius=8)
+        form.pack(fill="x", padx=16, pady=(0, 8))
+
+        row_ip = ctk.CTkFrame(form, fg_color="transparent")
+        row_ip.pack(fill="x", padx=10, pady=(8, 2))
+
+        ctk.CTkLabel(row_ip, text="Phone IP Address:", font=ctk.CTkFont(size=11), text_color=TEXT_LIGHT).pack(side="left")
+        ctk.CTkLabel(row_ip, text="Port:", font=ctk.CTkFont(size=11), text_color=TEXT_LIGHT).pack(side="right", padx=(0, 24))
+
+        row_fields = ctk.CTkFrame(form, fg_color="transparent")
+        row_fields.pack(fill="x", padx=10, pady=(0, 6))
+
+        ip_entry = ctk.CTkEntry(
+            row_fields, textvariable=ip_var,
+            placeholder_text="e.g. 192.168.1.15",
+            fg_color=DARK_BG, border_color=ACCENT_BLUE,
+            font=ctk.CTkFont(size=11)
+        )
+        ip_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        port_entry = ctk.CTkEntry(
+            row_fields, textvariable=port_var,
+            width=65,
+            placeholder_text="8080",
+            fg_color=DARK_BG, border_color=ACCENT_BLUE,
+            font=ctk.CTkFont(size=11)
+        )
+        port_entry.pack(side="left")
+
+        ctk.CTkLabel(form, text="Camera Location Tag:", font=ctk.CTkFont(size=10), text_color=TEXT_DIM).pack(padx=10, anchor="w")
+        ctk.CTkEntry(
+            form, textvariable=loc_var,
+            placeholder_text="e.g. Hallway Phone, Entrance Phone",
+            fg_color=DARK_BG, border_color=ACCENT_BLUE,
+            height=26, font=ctk.CTkFont(size=10)
+        ).pack(fill="x", padx=10, pady=(2, 8))
+
+        status_lbl = ctk.CTkLabel(modal, text="", font=ctk.CTkFont(size=10, weight="bold"), text_color=ACCENT_AMBER)
+        status_lbl.pack(pady=(0, 4))
+
+        def _apply_url():
+            raw_ip = ip_var.get().strip()
+            raw_port = port_var.get().strip() or "8080"
+            loc = loc_var.get().strip() or f"Phone Cam {slot_idx + 1}"
+
+            if not raw_ip or raw_ip == "192.168.1.":
+                status_lbl.configure(text="⚠ Please enter your phone's full IP address!", text_color=ACCENT_RED)
+                return
+
+            raw_ip = raw_ip.replace("http://", "").replace("https://", "").split("/")[0]
+            if ":" in raw_ip:
+                parts = raw_ip.split(":")
+                raw_ip = parts[0]
+                raw_port = parts[1]
+
+            url = f"http://{raw_ip}:{raw_port}/video"
+
+            cam = self.cam_ui_slots[slot_idx]
+            cam["source_var"].set(url)
+            cam["location_var"].set(loc)
+            cam["speed_var"].set("1x")
+            cam["enabled"].set(True)
+            if "progress_badge" in cam:
+                cam["progress_badge"].configure(text="Ready (Phone)", text_color=ACCENT_GREEN)
+
+            self.app.set_status(f"Camera {slot_idx + 1} linked to Phone ({url})", color=ACCENT_GREEN)
+            modal.destroy()
+
+        btn_row = ctk.CTkFrame(modal, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(0, 10))
+
+        ctk.CTkButton(
+            btn_row, text="🔗 Connect Phone Camera",
+            command=_apply_url,
+            fg_color=ACCENT_GREEN, hover_color="#04a57a",
+            text_color="#000000",
+            corner_radius=8, height=34,
+            font=ctk.CTkFont(size=11, weight="bold")
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        ctk.CTkButton(
+            btn_row, text="Cancel",
+            command=modal.destroy,
+            fg_color=DARK_BG, hover_color="#302020",
+            border_width=1, border_color="#555577",
+            corner_radius=8, height=34,
+            font=ctk.CTkFont(size=11)
+        ).pack(side="left", padx=(6, 0))
+
+    def _bind_mousewheel_smooth(self, widget):
+        """Recursively binds smooth mousewheel scrolling across all child widgets."""
+        try:
+            widget.bind("<Enter>", self._on_mouse_enter_panel, add="+")
+            widget.bind("<Leave>", self._on_mouse_leave_panel, add="+")
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._bind_mousewheel_smooth(child)
+
+    def _on_mouse_enter_panel(self, event=None):
+        try:
+            self._parent_canvas.bind_all("<MouseWheel>", self._on_smooth_mousewheel)
+        except Exception:
+            pass
+
+    def _on_mouse_leave_panel(self, event=None):
+        try:
+            self._parent_canvas.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
+    def _on_smooth_mousewheel(self, event):
+        if sys.platform.startswith("win"):
+            # Smooth gliding scroll step (3 units instead of jumpy 20 units)
+            delta = -int(event.delta / 40)
+            if delta == 0:
+                delta = -1 if event.delta > 0 else 1
+            try:
+                self._parent_canvas.yview_scroll(delta, "units")
+            except Exception:
+                pass
+            return "break"
 
     def _upload_photo(self):
         paths = filedialog.askopenfilenames(
@@ -483,6 +706,9 @@ class LeftPanel(ctk.CTkScrollableFrame):
         faces = sum(1 for p in profiles if p.has_face)
         name = self.target_name_var.get().strip() or "Target Person"
         self.app.set_status(f"Target: {name} ({count} poses/angles loaded, {faces} with biometric face)", color=ACCENT_GREEN)
+
+        # Re-bind mousewheel to new gallery cards so scrolling stays smooth
+        self._bind_mousewheel_smooth(self.gallery_container)
 
     def _on_start_clicked(self):
         # Sync sensitivity threshold

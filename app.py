@@ -140,25 +140,32 @@ class SmartSuperviseApp(ctk.CTk):
                 gc.collect()
 
             if self.video_engine.is_running:
-                # Update clock in titlebar
-                clock_str, _ = self.video_engine.get_clock_display()
-                self.global_clock_label.configure(text=f"⏱  CLOCK: {clock_str}")
+                # Update clock in titlebar every 5 ticks (~300ms) to eliminate string churn
+                if self.pulse_tick % 5 == 0:
+                    clock_str, _ = self.video_engine.get_clock_display()
+                    self.global_clock_label.configure(text=f"⏱  CLOCK: {clock_str}")
 
-                # Update active feeds telemetry in titlebar
-                active_slots = [s for s in self.video_engine.slots if s["enabled"]]
-                remaining_slots = [s for s in active_slots if not s["ended"]]
-                self.active_feeds_label.configure(
-                    text=f"📹  FEEDS: {len(remaining_slots)}/{len(active_slots)} Active"
-                )
+                    active_slots = [s for s in self.video_engine.slots if s["enabled"]]
+                    remaining_slots = [s for s in active_slots if not s["ended"]]
+                    self.active_feeds_label.configure(
+                        text=f"📹  FEEDS: {len(remaining_slots)}/{len(active_slots)} Active"
+                    )
 
-                # Update Center Video Matrix, Left Panel Cards, and Right Telemetry
+                # Update Center Video Matrix at full 16-20 FPS for silky-smooth video
                 self.center_grid.update_view(self.video_engine)
-                self.left_panel.update_camera_progress(self.video_engine)
-                self.right_panel.update_view()
+
+                # Update Left Panel progress badges (every 3 ticks ~180ms with zero-overhead dirty checking)
+                if self.pulse_tick % 3 == 0:
+                    self.left_panel.update_camera_progress(self.video_engine)
+
+                # Update Right Panel telemetry (every 5 ticks ~300ms)
+                if self.pulse_tick % 5 == 0:
+                    self.right_panel.update_view()
             elif self.center_grid.display_mode.get() == "map":
                 # Keep map animations alive even when stopped
                 self.center_grid.render_full_map()
-                self.right_panel.update_view()
+                if self.pulse_tick % 5 == 0:
+                    self.right_panel.update_view()
         except Exception:
             pass
         finally:

@@ -324,9 +324,6 @@ class LeftPanel(ctk.CTkScrollableFrame):
         )
         self.stop_btn.pack(fill="x", padx=4, pady=(0, 8))
 
-        # Enable smooth recursive mousewheel scrolling across all child widgets
-        self._bind_mousewheel_smooth(self)
-
     def _on_mode_change(self):
         if self.tracking_mode.get() == "class":
             self.photo_frame.pack_forget()
@@ -542,39 +539,17 @@ class LeftPanel(ctk.CTkScrollableFrame):
             font=ctk.CTkFont(size=11)
         ).pack(side="left", padx=(6, 0))
 
-    def _bind_mousewheel_smooth(self, widget):
-        """Recursively binds smooth mousewheel scrolling across all child widgets."""
-        try:
-            widget.bind("<Enter>", self._on_mouse_enter_panel, add="+")
-            widget.bind("<Leave>", self._on_mouse_leave_panel, add="+")
-        except Exception:
-            pass
-        for child in widget.winfo_children():
-            self._bind_mousewheel_smooth(child)
-
-    def _on_mouse_enter_panel(self, event=None):
-        try:
-            self._parent_canvas.bind_all("<MouseWheel>", self._on_smooth_mousewheel)
-        except Exception:
-            pass
-
-    def _on_mouse_leave_panel(self, event=None):
-        try:
-            self._parent_canvas.unbind_all("<MouseWheel>")
-        except Exception:
-            pass
-
-    def _on_smooth_mousewheel(self, event):
-        if sys.platform.startswith("win"):
-            # Smooth gliding scroll step (3 units instead of jumpy 20 units)
-            delta = -int(event.delta / 40)
-            if delta == 0:
-                delta = -1 if event.delta > 0 else 1
-            try:
-                self._parent_canvas.yview_scroll(delta, "units")
-            except Exception:
-                pass
-            return "break"
+    def _mouse_wheel_all(self, event):
+        """Silky-smooth, responsive mousewheel scrolling without any GIL lock or event thrashing."""
+        if self._check_if_valid_scroll(event.widget):
+            if sys.platform.startswith("win"):
+                delta = -int(event.delta / 8)
+                if delta == 0:
+                    delta = -1 if event.delta > 0 else 1
+                try:
+                    self._parent_canvas.yview_scroll(delta, "units")
+                except Exception:
+                    pass
 
     def _upload_photo(self):
         paths = filedialog.askopenfilenames(
@@ -707,9 +682,6 @@ class LeftPanel(ctk.CTkScrollableFrame):
         name = self.target_name_var.get().strip() or "Target Person"
         self.app.set_status(f"Target: {name} ({count} poses/angles loaded, {faces} with biometric face)", color=ACCENT_GREEN)
 
-        # Re-bind mousewheel to new gallery cards so scrolling stays smooth
-        self._bind_mousewheel_smooth(self.gallery_container)
-
     def _on_start_clicked(self):
         # Sync sensitivity threshold
         sens_val = self.match_sensitivity_var.get()
@@ -781,29 +753,44 @@ class LeftPanel(ctk.CTkScrollableFrame):
         self.reset_camera_progress()
 
     def update_camera_progress(self, video_engine):
-        """Updates individual per-camera progress badges and progress bars."""
+        """Updates individual per-camera progress badges and progress bars with zero-overhead dirty checking."""
         for i, cam in enumerate(self.cam_ui_slots):
             state = video_engine.get_slot_state(i)
             if not state or not state["enabled"]:
-                cam["progress_badge"].configure(text="OFF", text_color=TEXT_DIM)
-                cam["progress_bar"].set(0.0)
+                new_badge = "OFF"
+                new_color = TEXT_DIM
+                new_pct = 0.0
             elif state.get("ended", False):
-                cam["progress_badge"].configure(text="🏁 100%", text_color="#04a57a")
-                cam["progress_bar"].set(1.0)
-                cam["progress_bar"].configure(progress_color="#04a57a")
+                new_badge = "🏁 100%"
+                new_color = "#04a57a"
+                new_pct = 1.0
             elif state.get("is_file", False):
                 pct = state.get("progress_pct", 0.0)
-                cam["progress_badge"].configure(text=f"{pct:.1f}%", text_color=ACCENT_GREEN)
-                cam["progress_bar"].set(pct / 100.0)
-                cam["progress_bar"].configure(progress_color=ACCENT_GREEN)
+                new_badge = f"{pct:.1f}%"
+                new_color = ACCENT_GREEN
+                new_pct = pct / 100.0
             else:
-                cam["progress_badge"].configure(text="LIVE", text_color=ACCENT_BLUE)
-                cam["progress_bar"].set(1.0)
-                cam["progress_bar"].configure(progress_color=ACCENT_BLUE)
+                new_badge = "LIVE"
+                new_color = ACCENT_BLUE
+                new_pct = 1.0
+
+            # Dirty check: Only update widgets if values actually changed!
+            last_badge = cam.get("_last_badge")
+            if last_badge != new_badge:
+                cam["_last_badge"] = new_badge
+                cam["progress_badge"].configure(text=new_badge, text_color=new_color)
+
+            last_pct = cam.get("_last_pct", -1.0)
+            if abs(last_pct - new_pct) > 0.005:
+                cam["_last_pct"] = new_pct
+                cam["progress_bar"].set(new_pct)
+                cam["progress_bar"].configure(progress_color=new_color)
 
     def reset_camera_progress(self):
         """Resets all camera progress badges and bars."""
         for cam in self.cam_ui_slots:
+            cam["_last_badge"] = None
+            cam["_last_pct"] = None
             if cam["enabled"].get():
                 cam["progress_badge"].configure(text="Ready", text_color=ACCENT_GREEN)
             else:

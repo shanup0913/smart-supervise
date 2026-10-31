@@ -41,14 +41,25 @@ class CenterGrid(ctk.CTkFrame):
 
         self.view_buttons = ctk.CTkSegmentedButton(
             row1,
-            values=["⊞ 4-Grid", "Cam 1", "Cam 2", "Cam 3", "Cam 4", "Spotlight", "🗺️ Rapido Map"],
+            values=["⊞ 4-Grid", "Cam 1", "Cam 2", "Cam 3", "Cam 4", "Spotlight", "🗺️ Map"],
             command=self._on_display_mode_change,
             selected_color=ACCENT_BLUE,
             height=26,
             font=ctk.CTkFont(size=10)
         )
         self.view_buttons.set("⊞ 4-Grid")
-        self.view_buttons.pack(side="left", fill="x", expand=True)
+        self.view_buttons.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        self.map_quick_btn = ctk.CTkButton(
+            row1, text="🗺️ Full Map View",
+            command=self._toggle_map_view,
+            fg_color="#1a2838", hover_color="#204060",
+            text_color=ACCENT_BLUE,
+            border_width=1, border_color=ACCENT_BLUE,
+            corner_radius=6, width=115, height=26,
+            font=ctk.CTkFont(size=10, weight="bold")
+        )
+        self.map_quick_btn.pack(side="left")
 
         # Row 2: Dedicated Full-Width Hardware Telemetry Strip (Never clipped on small laptop screens)
         telem_strip = ctk.CTkFrame(ctrl_box, fg_color="#121220", corner_radius=6, height=24)
@@ -167,6 +178,15 @@ class CenterGrid(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_AMBER
         ).pack(side="left", padx=8)
 
+        ctk.CTkButton(
+            map_hdr, text="📹 Return to 4-Grid Video Matrix",
+            command=self.switch_to_grid,
+            fg_color=ACCENT_GREEN, hover_color="#04a57a",
+            text_color="#000000",
+            corner_radius=6, height=22,
+            font=ctk.CTkFont(size=10, weight="bold")
+        ).pack(side="right", padx=6, pady=2)
+
         # ── Map Journey Playback Controller Bar (Play/Pause, Step, Speed, Telemetry) ──
         self.map_ctrl_bar = ctk.CTkFrame(self.map_container, fg_color=CARD_BG, corner_radius=8, height=36)
         self.map_ctrl_bar.pack(fill="x", padx=2, pady=(0, 4), side="bottom")
@@ -227,28 +247,56 @@ class CenterGrid(ctk.CTkFrame):
         self.last_seen_label.pack(expand=True)
 
     def switch_to_map(self):
-        self.view_buttons.set("🗺️ Rapido Map")
-        self._on_display_mode_change("🗺️ Rapido Map")
+        """Switches central viewport to the interactive GPS journey map."""
+        self.view_buttons.set("🗺️ Map")
+        self._on_display_mode_change("🗺️ Map")
+
+    def switch_to_grid(self):
+        """Switches central viewport back to the 4-camera video matrix."""
+        self.view_buttons.set("⊞ 4-Grid")
+        self._on_display_mode_change("⊞ 4-Grid")
+
+    def _toggle_map_view(self):
+        """One-click toggle between 4-Grid video feeds and Live Journey Map."""
+        if self.display_mode.get() == "map":
+            self.switch_to_grid()
+        else:
+            self.switch_to_map()
 
     def _on_display_mode_change(self, mode):
         self.grid_container.pack_forget()
         self.single_container.pack_forget()
         self.map_container.pack_forget()
 
-        if mode == "⊞ 4-Grid":
-            self.grid_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
-            self.display_mode.set("grid")
-        elif mode == "Spotlight":
-            self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
-            self.display_mode.set("spotlight")
-        elif "Map" in mode:
+        if "Map" in mode:
             self.map_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
             self.display_mode.set("map")
+            if hasattr(self, "map_quick_btn"):
+                self.map_quick_btn.configure(
+                    text="📹 Back to Videos",
+                    fg_color=ACCENT_GREEN,
+                    hover_color="#04a57a",
+                    text_color="#000000"
+                )
             self.render_full_map()
         else:
-            idx = int(mode.replace("Cam ", "")) - 1
-            self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
-            self.display_mode.set(f"cam{idx}")
+            if hasattr(self, "map_quick_btn"):
+                self.map_quick_btn.configure(
+                    text="🗺️ Full Map View",
+                    fg_color="#1a2838",
+                    hover_color="#204060",
+                    text_color=ACCENT_BLUE
+                )
+            if mode == "⊞ 4-Grid":
+                self.grid_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+                self.display_mode.set("grid")
+            elif mode == "Spotlight":
+                self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+                self.display_mode.set("spotlight")
+            else:
+                idx = int(mode.replace("Cam ", "")) - 1
+                self.single_container.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+                self.display_mode.set(f"cam{idx}")
 
     def _toggle_map_playback(self):
         is_paused = self.app.map_visualizer.toggle_pause()

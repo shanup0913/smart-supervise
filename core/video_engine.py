@@ -4,6 +4,7 @@ dynamic real-world speed measurement, 4-core concurrency, and background AI scan
 """
 
 import os
+import sys
 import cv2
 import time
 import threading
@@ -142,7 +143,14 @@ class VideoEngine:
                 if not slot["is_file"] and slot["speed"] in ["5x", "10x", "20x", "40x"]:
                     slot["speed"] = "1x"
 
-                cap = cv2.VideoCapture(src)
+                # On Windows, try DirectShow (CAP_DSHOW) first for webcam index to avoid Media Foundation lock
+                if isinstance(src, int) and sys.platform.startswith("win"):
+                    cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+                    if not cap.isOpened():
+                        cap = cv2.VideoCapture(src)
+                else:
+                    cap = cv2.VideoCapture(src)
+
                 if cap.isOpened():
                     slot["cap"] = cap
                     slot["spotted"] = False
@@ -157,7 +165,25 @@ class VideoEngine:
                     active_count += 1
                 else:
                     self.stop()
-                    raise ConnectionError(f"Could not connect to Camera {i+1} source:\n{raw_src}")
+                    if isinstance(src, int):
+                        hint = (
+                            f"Could not open Webcam (index {src}) on Camera {i+1}.\n\n"
+                            "Quick Fixes:\n"
+                            "• Close any app using your camera (Zoom, Teams, Meet, or Windows Camera app).\n"
+                            "• Check Windows Settings → Privacy & Security → Camera (Allow apps access).\n"
+                            "• If you have an external or IR camera, try index '1'."
+                        )
+                    elif str(src).startswith("http://") or str(src).startswith("rtsp://"):
+                        hint = (
+                            f"Could not connect to Phone / IP Camera {i+1}:\n{raw_src}\n\n"
+                            "Quick Fixes:\n"
+                            "1. Make sure you tapped 'Start server' inside the phone app.\n"
+                            "2. Ensure laptop & phone are on the SAME Wi-Fi (or turn on Phone Hotspot).\n"
+                            "3. Test in Chrome: Open '{raw_src}' in your browser to verify it connects."
+                        )
+                    else:
+                        hint = f"Could not read video file for Camera {i+1}:\n{raw_src}\nPlease verify the file exists."
+                    raise ConnectionError(hint)
             else:
                 slot["cap"] = None
 

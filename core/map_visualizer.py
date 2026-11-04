@@ -1,33 +1,126 @@
+"""
+MapVisualizer 2.0: Interactive 2D Surveillance Radar & Floorplan Blueprint Visualizer.
+
+Key Capabilities:
+1. Custom Blueprint / Floorplan Upload (.png, .jpg, .jpeg, .bmp, .webp) with auto-scaling
+   and high-contrast dark overlay.
+2. Interactive Drag-and-Drop Camera Pin Placement ("Locate Camera") with real-time feedback.
+3. Persistent Configuration: saves node coordinates and blueprint path to models/map_config.json.
+4. Bidirectional Path Visualization (A -> B and B -> A) with curved Bezier offset arcs.
+5. Sequential Blinking Tracer Loop (Start to End Trip Replay) with speed controls and pause.
+6. Live Pulsing GPS Target Pin at Last Known Location.
+"""
+
+import os
+import json
 import math
 import tkinter as tk
+from PIL import Image, ImageTk
+
+DEFAULT_NODE_POSITIONS = [
+    (0.22, 0.28),  # Camera 1 (North Entrance / Gate)
+    (0.78, 0.28),  # Camera 2 (East Corridor Wing A)
+    (0.78, 0.72),  # Camera 3 (Room 204 / South Wing)
+    (0.22, 0.72),  # Camera 4 (Cafeteria / West Plaza)
+]
+
 
 class MapVisualizer:
-    """
-    MapVisualizer: Generates an interactive 2D Rapido/Uber-style GPS surveillance map.
-    
-    Key Capabilities:
-    1. Bidirectional Path Visualization (A -> B and B -> A):
-       - Automatically offsets forward and return journeys using curved Bezier arcs.
-       - A -> B and B -> A never overlap; both are distinctly visible with directional arrows!
-    2. Sequential Blinking Tracer Loop (Start to End Trip Replay):
-       - An animated glowing GPS pulse travels sequentially from Origin -> Transits -> Destination.
-       - Each visited camera station flashes with an expanding radar ripple as the tracer reaches it!
-    3. Live Pulsing GPS Target Pin at Last Known Location.
-    4. Architectural facility floorplan with zone outlines and blueprint walkways.
-    """
     def __init__(self):
-        # Normalized coordinates (u, v) for the 4 camera stations [0.0 - 1.0]
-        self.node_positions = [
-            (0.22, 0.28),  # Camera 1 (North Entrance / Gate)
-            (0.78, 0.28),  # Camera 2 (East Corridor Wing A)
-            (0.78, 0.72),  # Camera 3 (Room 204 / South Wing)
-            (0.22, 0.72),  # Camera 4 (Cafeteria / West Plaza)
-        ]
-        self.tracer_progress = 0.0 # Loops from 0 to len(route) for sequential trip playback
+        # Resolve path to models/map_config.json
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.config_dir = os.path.join(base_dir, "models")
+        self.config_path = os.path.join(self.config_dir, "map_config.json")
+
+        self.node_positions = list(DEFAULT_NODE_POSITIONS)
+        self.custom_blueprint_path = None
+
+        # Image caching to avoid re-decoding image every 60ms
+        self._cached_blueprint_tk = None
+        self._cached_blueprint_dim = None
+
+        # Interactive Drag & Hover State
+        self.dragged_node_idx = None
+        self.hovered_node_idx = None
+
+        # Journey Playback Animation
+        self.tracer_progress = 0.0
         self.is_paused = False
-        self.speed_multiplier = 1.0 # 0.5x, 1.0x, 2.0x
-        self.dwell_counter = 0      # Ticks paused at a station or finale
+        self.speed_multiplier = 1.0
+        self.dwell_counter = 0
         self.current_step_info = "Trip Ready"
+
+        # Auto-load saved configuration on startup
+        self.load_config()
+
+    def load_config(self):
+        """Loads persistent camera node positions and custom blueprint path."""
+        try:
+            if os.path.isfile(self.config_path):
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                positions = cfg.get("node_positions")
+                if positions and isinstance(positions, list) and len(positions) == 4:
+                    self.node_positions = [
+                        (float(p[0]), float(p[1])) for p in positions
+                    ]
+                bp_path = cfg.get("custom_blueprint_path")
+                if bp_path and os.path.isfile(bp_path):
+                    self.custom_blueprint_path = bp_path
+        except Exception:
+            self.node_positions = list(DEFAULT_NODE_POSITIONS)
+            self.custom_blueprint_path = None
+
+    def save_config(self):
+        """Persists current camera positions and custom blueprint path to models/map_config.json."""
+        try:
+            os.makedirs(self.config_dir, exist_ok=True)
+            cfg = {
+                "node_positions": [
+                    [round(p[0], 4), round(p[1], 4)] for p in self.node_positions
+                ],
+                "custom_blueprint_path": self.custom_blueprint_path
+            }
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
+
+    def set_custom_blueprint(self, image_path):
+        """Sets and validates a new custom floorplan image."""
+        if not image_path or not os.path.isfile(image_path):
+            return False
+        try:
+            # Verify image can be opened by PIL
+            with Image.open(image_path) as test_img:
+                test_img.verify()
+            self.custom_blueprint_path = image_path
+            self._cached_blueprint_tk = None
+            self._cached_blueprint_dim = None
+            self.save_config()
+            return True
+        except Exception:
+            return False
+
+    def clear_custom_blueprint(self):
+        """Clears custom blueprint and restores procedural radar grid."""
+        self.custom_blueprint_path = None
+        self._cached_blueprint_tk = None
+        self._cached_blueprint_dim = None
+        self.save_config()
+
+    def reset_to_default(self):
+        """Resets all camera pin coordinates to standard facility positions."""
+        self.node_positions = list(DEFAULT_NODE_POSITIONS)
+        self.save_config()
+
+    def set_node_position(self, cam_idx, u, v):
+        """Updates normalized position (0.04 - 0.96) for a specific camera."""
+        if 0 <= cam_idx < 4:
+            clamped_u = max(0.04, min(0.96, float(u)))
+            clamped_v = max(0.06, min(0.94, float(v)))
+            self.node_positions[cam_idx] = (clamped_u, clamped_v)
+            self.save_config()
 
     def toggle_pause(self):
         """Toggles pause/play for the trip tracer animation."""
@@ -87,7 +180,6 @@ class MapVisualizer:
         dist = math.hypot(dx, dy)
         if dist < 1e-4:
             return mx, my
-        # Unit normal vector
         ux, uy = -dy / dist, dx / dist
         return mx + ux * offset, my + uy * offset
 
@@ -103,7 +195,7 @@ class MapVisualizer:
 
     def draw_map(self, canvas, width, height, route=None, camera_names=None, last_known=None, pulse_tick=0, is_mini=False):
         """
-        Renders the complete 2D Rapido-style surveillance map onto a Tkinter Canvas.
+        Renders the complete 2D Rapido surveillance map or custom blueprint onto Tkinter Canvas.
         """
         canvas.delete("all")
         if width <= 10 or height <= 10:
@@ -113,16 +205,41 @@ class MapVisualizer:
         camera_names = camera_names or [f"Camera {i+1}" for i in range(4)]
         last_known = last_known or {}
 
-        # ── 1. Blueprint Grid Background ─────────────────────────────────────
-        bg_color = "#0a0b16" if not is_mini else "#0e0f1e"
-        canvas.configure(bg=bg_color)
+        # ── 1. Background: Custom Blueprint or Radar Blueprint Grid ──────────
+        has_custom_blueprint = (
+            self.custom_blueprint_path is not None and
+            os.path.isfile(self.custom_blueprint_path)
+        )
 
-        grid_spacing = 30 if not is_mini else 20
-        grid_color = "#141528"
-        for gx in range(0, width, grid_spacing):
-            canvas.create_line(gx, 0, gx, height, fill=grid_color, width=1)
-        for gy in range(0, height, grid_spacing):
-            canvas.create_line(0, gy, width, gy, fill=grid_color, width=1)
+        if has_custom_blueprint:
+            try:
+                # Update image cache if dimensions changed
+                if self._cached_blueprint_dim != (width, height):
+                    raw_img = Image.open(self.custom_blueprint_path).convert("RGBA")
+                    resized = raw_img.resize((width, height), Image.Resampling.LANCZOS)
+
+                    # Apply subtle dark tinted veil for ultra-high contrast on light blueprints
+                    overlay = Image.new("RGBA", (width, height), (10, 12, 22, 110))
+                    blended = Image.alpha_composite(resized, overlay)
+
+                    self._cached_blueprint_tk = ImageTk.PhotoImage(blended)
+                    self._cached_blueprint_dim = (width, height)
+
+                canvas.create_image(width // 2, height // 2, image=self._cached_blueprint_tk)
+                canvas._bg_img = self._cached_blueprint_tk  # Keep reference to prevent GC
+            except Exception:
+                has_custom_blueprint = False
+
+        if not has_custom_blueprint:
+            bg_color = "#0a0b16" if not is_mini else "#0e0f1e"
+            canvas.configure(bg=bg_color)
+
+            grid_spacing = 30 if not is_mini else 20
+            grid_color = "#141528"
+            for gx in range(0, width, grid_spacing):
+                canvas.create_line(gx, 0, gx, height, fill=grid_color, width=1)
+            for gy in range(0, height, grid_spacing):
+                canvas.create_line(0, gy, width, gy, fill=grid_color, width=1)
 
         # ── 2. Compute Camera Node Positions ─────────────────────────────────
         nodes_xy = []
@@ -131,8 +248,8 @@ class MapVisualizer:
             ny = int(nv * height)
             nodes_xy.append((nx, ny))
 
-        # Architectural Zone Room Cards (Full map mode only)
-        if not is_mini:
+        # Architectural Zone Room Cards (Only when no custom blueprint in full map mode)
+        if not is_mini and not has_custom_blueprint:
             zones = [
                 ("ZONE A · NORTH ENTRANCE", nodes_xy[0][0] - 80, nodes_xy[0][1] - 50, nodes_xy[0][0] + 80, nodes_xy[0][1] + 55),
                 ("ZONE B · EAST CORRIDOR",  nodes_xy[1][0] - 80, nodes_xy[1][1] - 50, nodes_xy[1][0] + 80, nodes_xy[1][1] + 55),
@@ -145,6 +262,8 @@ class MapVisualizer:
 
         # Architectural Corridors (facility background pathways)
         corridor_color = "#1b1d36" if not is_mini else "#191a30"
+        if has_custom_blueprint:
+            corridor_color = "#202540"
         corridor_w = 12 if not is_mini else 6
         pathway_pairs = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2), (1, 3)]
         for p1, p2 in pathway_pairs:
@@ -153,13 +272,11 @@ class MapVisualizer:
 
         # ── 3. Bidirectional Rapido Travel Routes (A -> B and B -> A) ────────
         visited_cam_indices = []
-        hop_splines = [] # List of ((x0, y0), (xc, yc), (x1, y1), step_info)
+        hop_splines = []
 
         if route and len(route) >= 1:
             route_node_indices = [self._get_cam_idx(r, camera_names) for r in route]
             visited_cam_indices = list(set(route_node_indices))
-
-            # Track edges between pairs to offset return trips cleanly
             pair_seen_counts = {}
 
             if len(route) >= 2:
@@ -167,19 +284,16 @@ class MapVisualizer:
                     c1_idx = route_node_indices[step_idx]
                     c2_idx = route_node_indices[step_idx + 1]
 
-                    # IMPORTANT: Ignore self-hops (staying at same camera station)
                     if c1_idx == c2_idx:
                         continue
 
                     p1 = nodes_xy[c1_idx]
                     p2 = nodes_xy[c2_idx]
 
-                    # Canonical edge key
                     pair_key = (min(c1_idx, c2_idx), max(c1_idx, c2_idx))
                     count = pair_seen_counts.get(pair_key, 0)
                     pair_seen_counts[pair_key] = count + 1
 
-                    # If traversing forward: offset +24px; if returning opposite: offset -24px
                     is_forward = (c1_idx <= c2_idx)
                     base_offset = 24 if not is_mini else 14
                     curve_offset = (base_offset * (count + 1)) if is_forward else (-base_offset * (count + 1))
@@ -188,22 +302,21 @@ class MapVisualizer:
                     hop_num = len(hop_splines) + 1
                     hop_splines.append((p1, (cx, cy), p2, route[step_idx + 1], hop_num))
 
-                    # 3A. Outer glowing translucent highway lane
+                    # Outer glowing translucent highway lane
                     glow_color = "#00384d" if is_forward else "#4d2800"
                     glow_w = 10 if not is_mini else 6
                     canvas.create_line(p1[0], p1[1], cx, cy, p2[0], p2[1],
                                        fill=glow_color, width=glow_w, smooth=True, capstyle=tk.ROUND)
 
-                    # 3B. Core vibrant neon lane (Cyan for forward, Amber for return)
+                    # Core vibrant neon lane (Cyan for forward, Amber for return)
                     core_color = "#00f5ff" if is_forward else "#ffb300"
                     core_w = 3 if not is_mini else 2
                     canvas.create_line(p1[0], p1[1], cx, cy, p2[0], p2[1],
                                        fill=core_color, width=core_w, smooth=True, capstyle=tk.ROUND)
 
-                    # 3C. Directional Motion Chevrons (> > >) along curve
+                    # Directional Motion Chevrons (> > >) along curve
                     for t_arrow in [0.35, 0.65]:
                         ax, ay = self._eval_bezier(p1, (cx, cy), p2, t_arrow)
-                        # Tangent derivative for arrow angle
                         tx, ty = self._eval_bezier(p1, (cx, cy), p2, min(1.0, t_arrow + 0.05))
                         adx = tx - ax
                         ady = ty - ay
@@ -217,17 +330,17 @@ class MapVisualizer:
                             canvas.create_line(ax - aux * ch_sz - perpx, ay - auy * ch_sz - perpy, ax, ay,
                                                fill="#ffffff", width=2)
 
-                    # 3D. Step sequence number badge at arc midpoint
+                    # Step sequence number badge at arc midpoint
                     if not is_mini:
                         mx, my = self._eval_bezier(p1, (cx, cy), p2, 0.50)
                         vtime = route[step_idx + 1].get("video_time", "")
                         badge_txt = f"Hop {hop_num}: {vtime}"
                         bw = len(badge_txt) * 6 + 10
-                        canvas.create_rectangle(mx - bw//2, my - 8, mx + bw//2, my + 8,
+                        canvas.create_rectangle(mx - bw // 2, my - 8, mx + bw // 2, my + 8,
                                                 fill="#080914", outline=core_color, width=1)
                         canvas.create_text(mx, my, text=badge_txt, fill=core_color, font=("Arial", 7, "bold"))
 
-        # ── 4. Sequential Blinking Tracer Loop (Start to End Trip Playback) ─
+        # ── 4. Sequential Blinking Tracer Loop ───────────────────────────────
         if hop_splines:
             total_hops = len(hop_splines)
             cur_hop_idx = min(total_hops - 1, max(0, int(self.tracer_progress)))
@@ -238,15 +351,13 @@ class MapVisualizer:
             dest_time = hop_data.get("video_time", "")
             is_final_hop = (cur_hop_idx == total_hops - 1)
 
-            # Advance tracer when not paused (smooth gliding with station dwell)
             if not self.is_paused:
                 base_step = (0.015 if not is_mini else 0.025) * self.speed_multiplier
                 if t_frac >= 0.95:
-                    # Station arrival dwell
                     max_dwell = 35 if is_final_hop else 18
                     if self.dwell_counter < max_dwell:
                         self.dwell_counter += 1
-                        t_frac = 1.0 # hold at destination node
+                        t_frac = 1.0
                     else:
                         self.dwell_counter = 0
                         self.tracer_progress = float((cur_hop_idx + 1) % total_hops)
@@ -257,7 +368,6 @@ class MapVisualizer:
 
             tracer_x, tracer_y = self._eval_bezier(p1, pc, p2, t_frac)
 
-            # Update current step telemetry info for controller
             if t_frac >= 0.92:
                 if is_final_hop:
                     self.current_step_info = f"🏁 ARRIVED AT DESTINATION: {dest_cam_name} @ {dest_time}"
@@ -283,20 +393,31 @@ class MapVisualizer:
                                    p2[0] + pulse_r, p2[1] + pulse_r,
                                    outline=pulse_col, width=2)
 
-            # Destination Arrival Finale Banner ("after seq")
             if is_final_hop and t_frac >= 0.88 and not is_mini:
                 fin_y = height - 55
-                canvas.create_rectangle(width//2 - 210, fin_y - 14, width//2 + 210, fin_y + 14,
+                canvas.create_rectangle(width // 2 - 210, fin_y - 14, width // 2 + 210, fin_y + 14,
                                         fill="#052e16", outline="#00e676", width=2)
-                canvas.create_text(width//2, fin_y,
+                canvas.create_text(width // 2, fin_y,
                                    text=f"🏁 TRIP COMPLETE · ARRIVED: {dest_cam_name} @ {dest_time}",
                                    fill="#b9f6ca", font=("Arial", 9, "bold"))
 
-        # ── 5. Camera Nodes ──────────────────────────────────────────────────
+        # ── 5. Camera Nodes (Interactive Draggable Pins in Full Map) ─────────
         node_radius = 18 if not is_mini else 10
         for i, (nx, ny) in enumerate(nodes_xy):
             is_visited = i in visited_cam_indices
             is_current = (last_known.get("camera") and self._get_cam_idx(last_known.get("camera")) == i)
+            is_dragged = (i == self.dragged_node_idx)
+            is_hovered = (i == self.hovered_node_idx)
+
+            # Draggable Interaction Halo
+            if is_dragged:
+                canvas.create_oval(nx - node_radius - 8, ny - node_radius - 8,
+                                   nx + node_radius + 8, ny + node_radius + 8,
+                                   outline="#ffd700", width=3, dash=(4, 2))
+            elif is_hovered:
+                canvas.create_oval(nx - node_radius - 6, ny - node_radius - 6,
+                                   nx + node_radius + 6, ny + node_radius + 6,
+                                   outline="#00f5ff", width=2)
 
             if is_current:
                 circle_fill = "#ff1744"
@@ -325,6 +446,13 @@ class MapVisualizer:
                                    fill="#c0c4de" if is_visited else "#5a5e82",
                                    font=("Arial", 9, "bold" if is_visited else "normal"))
 
+                # Visual drag handle hint tag
+                if is_hovered or is_dragged:
+                    canvas.create_text(nx, ny - node_radius - 10,
+                                       text="✥ DRAG PIN" if not is_dragged else "📌 PLACING...",
+                                       fill="#ffd700" if is_dragged else "#00f5ff",
+                                       font=("Arial", 7, "bold"))
+
         # ── 6. Live Pulsing GPS Target Pin (Last Known Location) ─────────────
         if last_known and (last_known.get("camera") or last_known.get("camera_id") is not None):
             curr_idx = self._get_cam_idx(last_known, camera_names)
@@ -344,7 +472,7 @@ class MapVisualizer:
                 bx = px
                 by = py - node_radius - 22
                 bw = max(100, len(banner_txt) * 7 + 16)
-                canvas.create_rectangle(bx - bw//2, by - 10, bx + bw//2, by + 10,
+                canvas.create_rectangle(bx - bw // 2, by - 10, bx + bw // 2, by + 10,
                                         fill="#ff1744", outline="#ffffff", width=1)
                 canvas.create_text(bx, by, text=banner_txt, fill="#ffffff", font=("Arial", 8, "bold"))
 
@@ -354,7 +482,7 @@ class MapVisualizer:
             ox, oy = nodes_xy[orig_idx]
             orig_txt = f"🚩 START: {route[0].get('video_time', '00:00:00')}"
             obw = len(orig_txt) * 6 + 12
-            canvas.create_rectangle(ox - obw//2, oy - node_radius - 22, ox + obw//2, oy - node_radius - 6,
+            canvas.create_rectangle(ox - obw // 2, oy - node_radius - 22, ox + obw // 2, oy - node_radius - 6,
                                     fill="#00c853", outline="#b9f6ca", width=1)
             canvas.create_text(ox, oy - node_radius - 14, text=orig_txt, fill="#000000", font=("Arial", 7, "bold"))
 
@@ -369,7 +497,8 @@ class MapVisualizer:
             status_txt = "SEQUENTIAL TRIP REPLAY ACTIVE ●" if route else "WAITING FOR TARGET SIGHTINGS"
             status_col = "#00e676" if route else "#70759e"
 
-            hud_text = f"RAPIDO LIVE SURVEILLANCE RADAR   |   Hops: {hops} ({loc_count} Stations)   |   Last Seen: {last_cam}   |   {status_txt}"
+            bp_tag = " [CUSTOM BLUEPRINT]" if has_custom_blueprint else " [STANDARD BLUEPRINT]"
+            hud_text = f"SURVEILLANCE RADAR MAP 2.0{bp_tag}   |   Hops: {hops} ({loc_count} Stations)   |   Last: {last_cam}   |   {status_txt}"
             canvas.create_text(24, hud_y, text=hud_text, fill=status_col, font=("Arial", 9, "bold"), anchor="w")
 
             comp_x = width - 40

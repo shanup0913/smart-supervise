@@ -51,6 +51,8 @@ class VideoEngine:
         self.tracker = tracker
 
         self.is_running = False
+        self.is_paused = False
+        self.current_speed = "10x"
         self.worker_thread = None
         self._lock = threading.RLock()
 
@@ -191,6 +193,8 @@ class VideoEngine:
             raise ValueError("Please enable at least one Camera slot!")
 
         self.is_running = True
+        self.is_paused = False
+        self.current_speed = str(global_speed).strip()
         self.global_clock_sec = 0.0
         self.start_clock_sec = 0.0
         self.start_real_time = time.time()
@@ -198,15 +202,45 @@ class VideoEngine:
 
         self.worker_thread = threading.Thread(
             target=self._parallel_scan_loop,
-            args=(global_speed, on_finished_callback),
+            args=(on_finished_callback,),
             daemon=True
         )
         self.worker_thread.start()
         return active_count
 
+    def toggle_pause(self):
+        """Toggles pause/resume state. Returns True if now paused, False if resumed."""
+        with self._lock:
+            self.is_paused = not self.is_paused
+            if not self.is_paused:
+                self.start_real_time = time.time()
+                self.start_clock_sec = self.global_clock_sec
+            return self.is_paused
+
+    def pause(self):
+        with self._lock:
+            self.is_paused = True
+
+    def resume(self):
+        with self._lock:
+            self.is_paused = False
+            self.start_real_time = time.time()
+            self.start_clock_sec = self.global_clock_sec
+
+    def set_global_speed(self, new_speed):
+        """Dynamically adjusts search speed mid-playback without restarting feeds."""
+        with self._lock:
+            self.current_speed = str(new_speed).strip()
+            self.start_real_time = time.time()
+            self.start_clock_sec = self.global_clock_sec
+            for slot in self.slots:
+                if slot["is_file"]:
+                    slot["speed"] = self.current_speed
+
     def stop(self):
         """Halts the worker thread safely and releases camera resources without race conditions."""
         self.is_running = False
+        self.is_paused = False
         if self.worker_thread is not None and self.worker_thread.is_alive():
             try:
                 self.worker_thread.join(timeout=1.5)
@@ -316,10 +350,16 @@ class VideoEngine:
         device_str = "⚡ NVIDIA GPU (CUDA)" if self.has_cuda else "💻 CPU (4-Core Parallel)"
         pct, _, _, progress_summary = self.get_progress()
 
+        if self.is_paused:
+            actual_speed_str = "⏸ PAUSED"
+            eta_str = "Paused"
+        else:
+            actual_speed_str = f"{actual_speed:.1f}x"
+
         return {
             "actual_speed": round(actual_speed, 1),
-            "actual_speed_str": f"{actual_speed:.1f}x",
-            "steps_per_sec": round(self.current_steps_per_sec, 1),
+            "actual_speed_str": actual_speed_str,
+            "steps_per_sec": round(self.current_steps_per_sec, 1) if not self.is_paused else 0.0,
             "eta_str": eta_str,
             "device": device_str,
             "progress_pct": round(pct, 1),
@@ -424,10 +464,11 @@ class VideoEngine:
         except Exception:
             return {"id": slot["id"], "spotted": False, "ended": False}
 
-    def _parallel_scan_loop(self, global_speed, on_finished_callback):
+    def _parallel_scan_loop(self, on_finished_callback):
         """
         Parallel 4-Core Worker Loop:
         Executes all 4 cameras simultaneously using ThreadPoolExecutor across CPU cores.
+        Supports real-time mid-video speed adjustment and instant freeze/pause.
         """
         step_counter = 0
         timer = time.time()
@@ -435,7 +476,14 @@ class VideoEngine:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             while self.is_running:
                 try:
-                    step_frames, sleep_time = self.speed_map.get(global_speed, (105, 0.002))
+                    if self.is_paused:
+                        time.sleep(0.04)
+                        continue
+
+                    with self._lock:
+                        cur_speed = self.current_speed
+
+                    step_frames, sleep_time = self.speed_map.get(cur_speed, (105, 0.002))
                     cur_sec = int(self.global_clock_sec)
                     gh = cur_sec // 3600
                     gm = (cur_sec % 3600) // 60
@@ -448,7 +496,7 @@ class VideoEngine:
 
                     # Dispatch all active cameras in parallel across 4 CPU cores
                     futures = [
-                        executor.submit(self._process_camera_slot, s, global_speed, global_time_str, cur_sec)
+                        executor.submit(self._process_camera_slot, s, cur_speed, global_time_str, cur_sec)
                         for s in active_slots
                     ]
 

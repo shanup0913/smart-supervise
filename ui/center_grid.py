@@ -1,11 +1,15 @@
 """
 CenterGrid: 2x2 CCTV Matrix, focused camera zoom, Spotlight mode,
-interactive 2D Rapido GPS Radar Map, and Last Known Location telemetry.
+interactive 2D Rapido GPS Radar Map 2.0 with custom blueprint upload,
+draggable camera pins, and zero-lag dirty-checked telemetry.
 """
 
+import os
+import math
 import cv2
 from PIL import Image
 import tkinter as tk
+from tkinter import filedialog
 import customtkinter as ctk
 
 from ui.theme import (
@@ -16,12 +20,14 @@ from ui.theme import (
 
 
 class CenterGrid(ctk.CTkFrame):
-    """Center surveillance viewport supporting 2x2 grid, spotlight, single cam, and full radar map."""
+    """Center surveillance viewport supporting 2x2 grid, spotlight, single cam, and full radar map 2.0."""
     def __init__(self, parent, app):
         super().__init__(parent, fg_color=PANEL_BG, corner_radius=12)
         self.app = app
 
         self.display_mode = ctk.StringVar(value="grid")
+        self._drag_node_idx = None
+
         self._build_ui()
 
     def _build_ui(self):
@@ -61,7 +67,7 @@ class CenterGrid(ctk.CTkFrame):
         )
         self.map_quick_btn.pack(side="left")
 
-        # Row 2: Dedicated Full-Width Hardware Telemetry Strip (Never clipped on small laptop screens)
+        # Row 2: Dedicated Full-Width Hardware Telemetry Strip (Dirty-checked for zero lag)
         telem_strip = ctk.CTkFrame(ctrl_box, fg_color="#121220", corner_radius=6, height=24)
         telem_strip.pack(fill="x", pady=(1, 2))
 
@@ -169,12 +175,15 @@ class CenterGrid(ctk.CTkFrame):
         self.last_single_rendered_seq = -1
         self.last_single_rendered_idx = -1
 
-        # ── View C: Interactive 2D Rapido Live Map Container ──
+        # ── View C: Interactive 2D Rapido Live Map 2.0 Container ──
         self.map_container = ctk.CTkFrame(self, fg_color="transparent")
+
+        # Top Map Header
         map_hdr = ctk.CTkFrame(self.map_container, fg_color=CARD_BG, corner_radius=6, height=28)
-        map_hdr.pack(fill="x", padx=2, pady=(2, 4))
+        map_hdr.pack(fill="x", padx=2, pady=(2, 2))
+
         ctk.CTkLabel(
-            map_hdr, text="🗺️ RAPIDO LIVE SURVEILLANCE RADAR & TRANSIT ROUTE MAP",
+            map_hdr, text="🗺️ SURVEILLANCE RADAR & BLUEPRINT MAP 2.0",
             font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_AMBER
         ).pack(side="left", padx=8)
 
@@ -187,7 +196,48 @@ class CenterGrid(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold")
         ).pack(side="right", padx=6, pady=2)
 
-        # ── Map Journey Playback Controller Bar (Play/Pause, Step, Speed, Telemetry) ──
+        # Map 2.0 Calibration Toolbar (Upload Blueprint, Clear, Reset, Drag Hint)
+        self.map_tools_bar = ctk.CTkFrame(self.map_container, fg_color="#121326", corner_radius=6, height=30)
+        self.map_tools_bar.pack(fill="x", padx=2, pady=(0, 3))
+
+        ctk.CTkButton(
+            self.map_tools_bar, text="🖼️ Upload Blueprint",
+            command=self._on_upload_blueprint,
+            fg_color="#1c2844", hover_color="#283a66",
+            text_color=ACCENT_BLUE,
+            border_width=1, border_color=ACCENT_BLUE,
+            corner_radius=6, height=22, width=130,
+            font=ctk.CTkFont(size=10, weight="bold")
+        ).pack(side="left", padx=(6, 4), pady=3)
+
+        self.clear_bp_btn = ctk.CTkButton(
+            self.map_tools_bar, text="🗑️ Clear Blueprint",
+            command=self._on_clear_blueprint,
+            fg_color=DARK_BG, hover_color="#3a1c1c",
+            text_color="#d05050",
+            border_width=1, border_color="#552222",
+            corner_radius=6, height=22, width=110,
+            font=ctk.CTkFont(size=10)
+        )
+        self.clear_bp_btn.pack(side="left", padx=2, pady=3)
+
+        ctk.CTkButton(
+            self.map_tools_bar, text="🔄 Reset Pin Locations",
+            command=self._on_reset_pins,
+            fg_color=DARK_BG, hover_color=PANEL_BG,
+            text_color=TEXT_LIGHT,
+            border_width=1, border_color="#333355",
+            corner_radius=6, height=22, width=130,
+            font=ctk.CTkFont(size=10)
+        ).pack(side="left", padx=2, pady=3)
+
+        ctk.CTkLabel(
+            self.map_tools_bar, text="💡 Tip: Click & drag camera pins (CAM 1-4) on the blueprint to calibrate positions!",
+            font=ctk.CTkFont(size=9, weight="bold"),
+            text_color=ACCENT_AMBER
+        ).pack(side="right", padx=8, pady=3)
+
+        # ── Map Journey Playback Controller Bar ──
         self.map_ctrl_bar = ctk.CTkFrame(self.map_container, fg_color=CARD_BG, corner_radius=8, height=36)
         self.map_ctrl_bar.pack(fill="x", padx=2, pady=(0, 4), side="bottom")
 
@@ -230,8 +280,15 @@ class CenterGrid(ctk.CTkFrame):
         )
         self.map_step_label.pack(side="right", padx=12, pady=4)
 
+        # Main Map Canvas with Drag-and-Drop Pin Calibration bindings
         self.full_map_canvas = tk.Canvas(self.map_container, bg="#0a0b16", highlightthickness=0)
         self.full_map_canvas.pack(fill="both", expand=True, padx=2, pady=2)
+
+        self.full_map_canvas.bind("<ButtonPress-1>", self._on_map_press)
+        self.full_map_canvas.bind("<B1-Motion>", self._on_map_drag)
+        self.full_map_canvas.bind("<ButtonRelease-1>", self._on_map_release)
+        self.full_map_canvas.bind("<Motion>", self._on_map_motion)
+        self.full_map_canvas.bind("<Leave>", self._on_map_leave)
 
         # ── LAST KNOWN LOCATION Banner ──
         self.last_seen_banner = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=8, height=42)
@@ -245,6 +302,102 @@ class CenterGrid(ctk.CTkFrame):
             text_color=TEXT_DIM
         )
         self.last_seen_label.pack(expand=True)
+
+    # ── Map 2.0 User Action Handlers ──
+    def _on_upload_blueprint(self):
+        """Allows user to select a floorplan image to render as the surveillance map background."""
+        path = filedialog.askopenfilename(
+            title="Select Facility Floorplan / Blueprint Image",
+            filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp")]
+        )
+        if not path:
+            return
+        success = self.app.map_visualizer.set_custom_blueprint(path)
+        if success:
+            self.app.set_status(f"Custom Blueprint loaded: {os.path.basename(path)}", color=ACCENT_GREEN)
+            self.render_full_map()
+        else:
+            self.app.set_status("Failed to load blueprint image file!", color=ACCENT_RED)
+
+    def _on_clear_blueprint(self):
+        """Restores map background to standard high-tech radar blueprint grid."""
+        self.app.map_visualizer.clear_custom_blueprint()
+        self.app.set_status("Blueprint restored to procedural radar grid", color=TEXT_DIM)
+        self.render_full_map()
+
+    def _on_reset_pins(self):
+        """Resets all 4 camera pin positions to default corner layout."""
+        self.app.map_visualizer.reset_to_default()
+        self.app.set_status("Camera pin positions reset to default", color=ACCENT_GREEN)
+        self.render_full_map()
+
+    def _on_map_press(self, event):
+        """Detects if user clicked on any camera node pin to begin dragging."""
+        fw = self.full_map_canvas.winfo_width() or 640
+        fh = self.full_map_canvas.winfo_height() or 460
+        click_radius = 24
+        self._drag_node_idx = None
+        for idx, (nu, nv) in enumerate(self.app.map_visualizer.node_positions):
+            nx = int(nu * fw)
+            ny = int(nv * fh)
+            if math.hypot(event.x - nx, event.y - ny) <= click_radius:
+                self._drag_node_idx = idx
+                self.app.map_visualizer.dragged_node_idx = idx
+                self.full_map_canvas.configure(cursor="fleur")
+                self.render_full_map()
+                break
+
+    def _on_map_drag(self, event):
+        """Updates camera node position dynamically during drag-and-drop."""
+        if getattr(self, "_drag_node_idx", None) is not None:
+            fw = self.full_map_canvas.winfo_width() or 640
+            fh = self.full_map_canvas.winfo_height() or 460
+            nu = max(0.04, min(0.96, event.x / fw))
+            nv = max(0.06, min(0.94, event.y / fh))
+            self.app.map_visualizer.node_positions[self._drag_node_idx] = (nu, nv)
+            if hasattr(self, "map_step_label"):
+                cam_num = self._drag_node_idx + 1
+                self.map_step_label.configure(
+                    text=f"📍 Relocating CAM {cam_num} to ({int(nu*100)}%, {int(nv*100)}%)"
+                )
+            self.render_full_map()
+
+    def _on_map_release(self, event):
+        """Finalizes camera pin placement and saves coordinates persistently to models/map_config.json."""
+        if getattr(self, "_drag_node_idx", None) is not None:
+            idx = self._drag_node_idx
+            self._drag_node_idx = None
+            self.app.map_visualizer.dragged_node_idx = None
+            self.full_map_canvas.configure(cursor="")
+            self.app.map_visualizer.save_config()
+            if hasattr(self, "map_step_label"):
+                self.map_step_label.configure(text=f"💾 Saved Camera {idx + 1} position!")
+            self.render_full_map()
+
+    def _on_map_motion(self, event):
+        """Changes cursor to fleur when hovering over draggable camera pins."""
+        if getattr(self, "_drag_node_idx", None) is not None:
+            return
+        fw = self.full_map_canvas.winfo_width() or 640
+        fh = self.full_map_canvas.winfo_height() or 460
+        hover_idx = None
+        for idx, (nu, nv) in enumerate(self.app.map_visualizer.node_positions):
+            nx = int(nu * fw)
+            ny = int(nv * fh)
+            if math.hypot(event.x - nx, event.y - ny) <= 24:
+                hover_idx = idx
+                break
+        if hover_idx != self.app.map_visualizer.hovered_node_idx:
+            self.app.map_visualizer.hovered_node_idx = hover_idx
+            self.full_map_canvas.configure(cursor="fleur" if hover_idx is not None else "")
+            self.render_full_map()
+
+    def _on_map_leave(self, event):
+        """Clears hover halo and resets cursor when mouse leaves the canvas."""
+        if self.app.map_visualizer.hovered_node_idx is not None:
+            self.app.map_visualizer.hovered_node_idx = None
+            self.full_map_canvas.configure(cursor="")
+            self.render_full_map()
 
     def switch_to_map(self):
         """Switches central viewport to the interactive GPS journey map."""
@@ -332,9 +485,14 @@ class CenterGrid(ctk.CTkFrame):
             self.map_step_label.configure(text=self.app.map_visualizer.current_step_info)
 
     def update_view(self, video_engine):
+        """
+        High-performance view update with strict dirty checking.
+        Eliminates 300+ redundant Tcl widget reconfigurations per second, freeing
+        the Tkinter event loop so mousewheel scrolling remains 100% fluid.
+        """
         current_display = self.display_mode.get()
 
-        # Update Actual Measured Speed & Telemetry
+        # Update Actual Measured Speed & Telemetry (Dirty-checked)
         telem = video_engine.get_speed_telemetry()
         spd = self.app.left_panel.global_speed_var.get()
         telemetry_text = (
@@ -343,7 +501,9 @@ class CenterGrid(ctk.CTkFrame):
             f"ETA: {telem['eta_str']} | "
             f"{telem['device']}"
         )
-        self.fps_label.configure(text=telemetry_text)
+        if getattr(self, "_last_telemetry_text", None) != telemetry_text:
+            self._last_telemetry_text = telemetry_text
+            self.fps_label.configure(text=telemetry_text)
 
         # ── Mode A: 2x2 Fixed Grid ──
         if current_display == "grid":
@@ -351,42 +511,70 @@ class CenterGrid(ctk.CTkFrame):
                 tile = self.tiles[i]
                 state = video_engine.get_slot_state(i)
                 if state and state["enabled"]:
+                    tile["_last_disabled"] = False
                     pct = state.get("progress_pct", 0.0)
                     pstr = state.get("progress_str", "0.0%")
-                    spd = state.get("speed", "10x")
+                    spd_val = state.get("speed", "10x")
                     ended = state.get("ended", False)
 
-                    # Update individual per-camera progress footer
+                    # Determine target footer values
                     if ended:
-                        tile["pbar"].set(1.0)
-                        tile["pbar"].configure(progress_color="#04a57a")
-                        tile["plabel"].configure(text=f"🏁 100% DONE ({pstr})", text_color="#04a57a")
+                        target_pct = 1.0
+                        target_pbar_col = "#04a57a"
+                        target_plbl_text = f"🏁 100% DONE ({pstr})"
+                        target_plbl_col = "#04a57a"
                     elif state.get("is_file", False):
-                        tile["pbar"].set(pct / 100.0)
-                        tile["pbar"].configure(progress_color=ACCENT_GREEN)
-                        tile["plabel"].configure(text=f"⚡{spd} · {pstr}", text_color=ACCENT_GREEN)
+                        target_pct = pct / 100.0
+                        target_pbar_col = ACCENT_GREEN
+                        target_plbl_text = f"⚡{spd_val} · {pstr}"
+                        target_plbl_col = ACCENT_GREEN
                     else:
-                        tile["pbar"].set(1.0)
-                        tile["pbar"].configure(progress_color=ACCENT_BLUE)
-                        tile["plabel"].configure(text="🔴 LIVE FEED", text_color=ACCENT_BLUE)
+                        target_pct = 1.0
+                        target_pbar_col = ACCENT_BLUE
+                        target_plbl_text = "🔴 LIVE FEED"
+                        target_plbl_col = ACCENT_BLUE
+
+                    # Dirty check for progress bar and label
+                    if abs(tile.get("_last_pbar_val", -1.0) - target_pct) > 0.005 or tile.get("_last_pbar_col") != target_pbar_col:
+                        tile["_last_pbar_val"] = target_pct
+                        tile["_last_pbar_col"] = target_pbar_col
+                        tile["pbar"].set(target_pct)
+                        tile["pbar"].configure(progress_color=target_pbar_col)
+
+                    if tile.get("_last_plbl_text") != target_plbl_text or tile.get("_last_plbl_col") != target_plbl_col:
+                        tile["_last_plbl_text"] = target_plbl_text
+                        tile["_last_plbl_col"] = target_plbl_col
+                        tile["plabel"].configure(text=target_plbl_text, text_color=target_plbl_col)
 
                     if state["frame"] is not None:
                         frame = state["frame"]
                         loc = state["location"]
-                        if state["spotted"]:
-                            tile["header"].configure(
-                                text=f"🚨 CAM {i+1}: {loc} [TARGET FOUND!]",
-                                fg_color="#801010", text_color="#ffffff"
-                            )
-                            tile["frame"].configure(border_color=ACCENT_GREEN, border_width=2)
-                        else:
-                            tile["header"].configure(
-                                text=f"● CAM {i+1}: {loc} (Scanning)",
-                                fg_color=CARD_BG, text_color=TEXT_LIGHT
-                            )
-                            tile["frame"].configure(border_color="#22223a", border_width=1)
+                        spotted = state.get("spotted", False)
 
-                        # Only re-render CTkImage if a new frame sequence has arrived (prevents GDI leaks)
+                        if spotted:
+                            target_hdr_text = f"🚨 CAM {i+1}: {loc} [TARGET FOUND!]"
+                            target_hdr_fg = "#801010"
+                            target_hdr_col = "#ffffff"
+                            target_border_col = ACCENT_GREEN
+                            target_border_w = 2
+                        else:
+                            target_hdr_text = f"● CAM {i+1}: {loc} (Scanning)"
+                            target_hdr_fg = CARD_BG
+                            target_hdr_col = TEXT_LIGHT
+                            target_border_col = "#22223a"
+                            target_border_w = 1
+
+                        if tile.get("_last_hdr_text") != target_hdr_text or tile.get("_last_hdr_fg") != target_hdr_fg:
+                            tile["_last_hdr_text"] = target_hdr_text
+                            tile["_last_hdr_fg"] = target_hdr_fg
+                            tile["header"].configure(text=target_hdr_text, fg_color=target_hdr_fg, text_color=target_hdr_col)
+
+                        if tile.get("_last_border_col") != target_border_col or tile.get("_last_border_w") != target_border_w:
+                            tile["_last_border_col"] = target_border_col
+                            tile["_last_border_w"] = target_border_w
+                            tile["frame"].configure(border_color=target_border_col, border_width=target_border_w)
+
+                        # Only re-render CTkImage if a new frame sequence has arrived
                         frame_seq = state.get("frame_seq", 0)
                         if frame_seq != tile.get("last_rendered_seq", -1):
                             tile["last_rendered_seq"] = frame_seq
@@ -401,13 +589,16 @@ class CenterGrid(ctk.CTkFrame):
                             cimg = ctk.CTkImage(pimg, size=(nw, nh))
                             tile["label"].configure(image=cimg, text="")
                             tile["label"].image = cimg
+
                 elif state and not state["enabled"]:
-                    tile["header"].configure(text=f"CAM {i+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
-                    tile["frame"].configure(border_color="#181828", border_width=1)
-                    tile["label"].configure(image=None, text=f"Camera {i+1}\n(Disabled in Settings)")
-                    tile["pbar"].set(0.0)
-                    tile["plabel"].configure(text="Standby", text_color=TEXT_DIM)
-                    tile["last_rendered_seq"] = -1
+                    if not tile.get("_last_disabled", False):
+                        tile["_last_disabled"] = True
+                        tile["header"].configure(text=f"CAM {i+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
+                        tile["frame"].configure(border_color="#181828", border_width=1)
+                        tile["label"].configure(image=None, text=f"Camera {i+1}\n(Disabled in Settings)")
+                        tile["pbar"].set(0.0)
+                        tile["plabel"].configure(text="Standby", text_color=TEXT_DIM)
+                        tile["last_rendered_seq"] = -1
 
         # ── Mode B: Interactive Full Radar Map ──
         elif current_display == "map":
@@ -428,24 +619,41 @@ class CenterGrid(ctk.CTkFrame):
                 spd = state.get("speed", "10x")
                 ended = state.get("ended", False)
 
-                # Update single view progress footer
                 if ended:
-                    self.single_pbar.set(1.0)
-                    self.single_pbar.configure(progress_color="#04a57a")
-                    self.single_plabel.configure(text=f"CAM {idx+1} 🏁 FINISHED 100% ({pstr})", text_color="#04a57a")
+                    target_pct = 1.0
+                    target_col = "#04a57a"
+                    target_txt = f"CAM {idx+1} 🏁 FINISHED 100% ({pstr})"
                 elif state.get("is_file", False):
-                    self.single_pbar.set(pct / 100.0)
-                    self.single_pbar.configure(progress_color=ACCENT_GREEN)
-                    self.single_plabel.configure(text=f"CAM {idx+1} [⚡{spd}] · {pstr}", text_color=ACCENT_GREEN)
+                    target_pct = pct / 100.0
+                    target_col = ACCENT_GREEN
+                    target_txt = f"CAM {idx+1} [⚡{spd}] · {pstr}"
                 else:
-                    self.single_pbar.set(1.0)
-                    self.single_pbar.configure(progress_color=ACCENT_BLUE)
-                    self.single_plabel.configure(text=f"CAM {idx+1} 🔴 LIVE STREAM", text_color=ACCENT_BLUE)
+                    target_pct = 1.0
+                    target_col = ACCENT_BLUE
+                    target_txt = f"CAM {idx+1} 🔴 LIVE STREAM"
 
-                if state["spotted"]:
-                    self.single_header.configure(text=f"🚨 SPOTLIGHT: CAM {idx+1} — {loc} [TARGET SPOTTED!]", fg_color="#801010")
+                if abs(getattr(self, "_last_single_pbar", -1.0) - target_pct) > 0.005 or getattr(self, "_last_single_col", None) != target_col:
+                    self._last_single_pbar = target_pct
+                    self._last_single_col = target_col
+                    self.single_pbar.set(target_pct)
+                    self.single_pbar.configure(progress_color=target_col)
+
+                if getattr(self, "_last_single_txt", None) != target_txt:
+                    self._last_single_txt = target_txt
+                    self.single_plabel.configure(text=target_txt, text_color=target_col)
+
+                spotted = state.get("spotted", False)
+                if spotted:
+                    hdr_text = f"🚨 SPOTLIGHT: CAM {idx+1} — {loc} [TARGET SPOTTED!]"
+                    hdr_fg = "#801010"
                 else:
-                    self.single_header.configure(text=f"FOCUSED: CAM {idx+1} — {loc}", fg_color=CARD_BG)
+                    hdr_text = f"FOCUSED: CAM {idx+1} — {loc}"
+                    hdr_fg = CARD_BG
+
+                if getattr(self, "_last_single_hdr_txt", None) != hdr_text or getattr(self, "_last_single_hdr_fg", None) != hdr_fg:
+                    self._last_single_hdr_txt = hdr_text
+                    self._last_single_hdr_fg = hdr_fg
+                    self.single_header.configure(text=hdr_text, fg_color=hdr_fg)
 
                 if state["frame"] is not None:
                     frame = state["frame"]
@@ -468,6 +676,7 @@ class CenterGrid(ctk.CTkFrame):
         self.update_last_seen_banner()
 
     def update_last_seen_banner(self):
+        """Dirty-checked banner update to avoid redundant configure calls."""
         last_known = self.app.tracker.last_known
         if last_known.get("camera"):
             vt = last_known.get("video_time", "")
@@ -478,17 +687,26 @@ class CenterGrid(ctk.CTkFrame):
             )
             is_lost = self.app.tracker.is_target_lost() if self.app.video_engine.is_running else False
             color = ACCENT_RED if is_lost else ACCENT_GREEN
-            self.last_seen_banner.configure(fg_color="#0a2e1a" if not is_lost else "#2e0a0a")
-            self.last_seen_label.configure(text=loc_text, text_color=color)
+            bg_col = "#2e0a0a" if is_lost else "#0a2e1a"
         else:
-            self.last_seen_label.configure(
-                text="Last Known Location: Scanning synchronized feeds...",
-                text_color=TEXT_DIM
-            )
-            self.last_seen_banner.configure(fg_color=CARD_BG)
+            loc_text = "Last Known Location: Ready to search"
+            color = TEXT_DIM
+            bg_col = CARD_BG
+
+        if getattr(self, "_last_banner_text", None) != loc_text or getattr(self, "_last_banner_bg", None) != bg_col:
+            self._last_banner_text = loc_text
+            self._last_banner_bg = bg_col
+            self.last_seen_banner.configure(fg_color=bg_col)
+            self.last_seen_label.configure(text=loc_text, text_color=color)
 
     def reset_tiles(self):
         for tile in self.tiles:
+            tile["_last_disabled"] = None
+            tile["_last_pbar_val"] = None
+            tile["_last_pbar_col"] = None
+            tile["_last_plbl_text"] = None
+            tile["_last_hdr_text"] = None
+            tile["_last_border_col"] = None
             tile["header"].configure(text="Standby", fg_color=CARD_BG)
             tile["frame"].configure(border_color="#22223a")
             tile["label"].configure(image=None, text="Camera Standby")

@@ -303,26 +303,46 @@ class LeftPanel(ctk.CTkScrollableFrame):
             cam_pbar.pack(fill="x", padx=8, pady=(0, 4))
             cam["progress_bar"] = cam_pbar
 
-        # ── Start / Stop Buttons ──
+        # ── Start / Pause / Stop Scan Control Bar ──
+        ctrl_box = ctk.CTkFrame(self, fg_color="transparent")
+        ctrl_box.pack(fill="x", padx=4, pady=(6, 8))
+
         self.start_btn = ctk.CTkButton(
-            self, text="▶  START SCANNING",
+            ctrl_box, text="▶  START SCANNING",
             command=self._on_start_clicked,
             fg_color=ACCENT_GREEN, hover_color="#04a57a",
             text_color="#000000",
             corner_radius=8, height=36,
             font=ctk.CTkFont(size=12, weight="bold")
         )
-        self.start_btn.pack(fill="x", padx=4, pady=(6, 4))
+        self.start_btn.pack(fill="x", pady=(0, 4))
 
-        self.stop_btn = ctk.CTkButton(
-            self, text="■  STOP",
-            command=self._on_stop_clicked,
-            fg_color="#333355", hover_color=ACCENT_RED,
-            corner_radius=8, height=30,
+        sub_row = ctk.CTkFrame(ctrl_box, fg_color="transparent")
+        sub_row.pack(fill="x")
+
+        self.pause_btn = ctk.CTkButton(
+            sub_row, text="⏸  PAUSE",
+            command=self._on_pause_clicked,
+            fg_color=DARK_BG, hover_color="#3a3020",
+            text_color=ACCENT_AMBER,
+            border_width=1, border_color=ACCENT_AMBER,
+            corner_radius=8, height=32,
             font=ctk.CTkFont(size=11, weight="bold"),
             state="disabled"
         )
-        self.stop_btn.pack(fill="x", padx=4, pady=(0, 8))
+        self.pause_btn.pack(side="left", fill="x", expand=True, padx=(0, 3))
+
+        self.stop_btn = ctk.CTkButton(
+            sub_row, text="■  STOP",
+            command=self._on_stop_clicked,
+            fg_color=DARK_BG, hover_color="#401515",
+            text_color=ACCENT_RED,
+            border_width=1, border_color=ACCENT_RED,
+            corner_radius=8, height=32,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            state="disabled"
+        )
+        self.stop_btn.pack(side="left", fill="x", expand=True, padx=(3, 0))
 
     def _on_mode_change(self):
         if self.tracking_mode.get() == "class":
@@ -335,6 +355,10 @@ class LeftPanel(ctk.CTkScrollableFrame):
     def _on_global_speed_change(self, value):
         for cam in self.cam_ui_slots:
             cam["speed_var"].set(value)
+        # Dynamically adjust speed mid-video while running!
+        self.app.video_engine.set_global_speed(value)
+        if self.app.video_engine.is_running and not self.app.video_engine.is_paused:
+            self.app.set_status(f"Live Playback Speed set to {value}!", color=ACCENT_GREEN)
 
     def _on_sensitivity_change(self, value):
         if "Strict" in value or "70" in value:
@@ -543,7 +567,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
         """Silky-smooth, responsive mousewheel scrolling without any GIL lock or event thrashing."""
         if self._check_if_valid_scroll(event.widget):
             if sys.platform.startswith("win"):
-                delta = -int(event.delta / 8)
+                delta = -int(event.delta / 30)
                 if delta == 0:
                     delta = -1 if event.delta > 0 else 1
                 try:
@@ -727,6 +751,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
                 )
                 def _success():
                     self.start_btn.configure(text="▶  START SCANNING", state="disabled")
+                    self.pause_btn.configure(state="normal", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
                     self.stop_btn.configure(state="normal")
                     speed = self.global_speed_var.get()
                     self.app.set_status(f"SYNCHRONIZED SEARCH: {active_count} CAMERAS @ {speed}", color=ACCENT_GREEN)
@@ -735,6 +760,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
                 err_msg = str(e)
                 def _err():
                     self.start_btn.configure(text="▶  START SCANNING", state="normal")
+                    self.pause_btn.configure(state="disabled", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
                     self.stop_btn.configure(state="disabled")
                     self.app.set_status("STREAM CONNECTION ERROR", color=ACCENT_RED)
                     messagebox.showerror("Start Error", err_msg)
@@ -742,8 +768,20 @@ class LeftPanel(ctk.CTkScrollableFrame):
 
         threading.Thread(target=_bg_start, daemon=True).start()
 
+    def _on_pause_clicked(self):
+        """Pauses or resumes video scanning instantly."""
+        is_paused = self.app.video_engine.toggle_pause()
+        if is_paused:
+            self.pause_btn.configure(text="▶  RESUME", fg_color="#553c00", text_color="#ffd700")
+            self.app.set_status("PAUSED — VIDEO SCANNING FROZEN", color=ACCENT_AMBER)
+        else:
+            self.pause_btn.configure(text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
+            spd = self.global_speed_var.get()
+            self.app.set_status(f"RESUMED — SCANNING @ {spd}", color=ACCENT_GREEN)
+
     def _on_stop_clicked(self):
         self.stop_btn.configure(text="⏳ STOPPING...", state="disabled")
+        self.pause_btn.configure(state="disabled", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
         self.update_idletasks()
         self.app.video_engine.stop()
         self.start_btn.configure(text="▶  START SCANNING", state="normal")

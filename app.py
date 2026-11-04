@@ -187,6 +187,8 @@ class SmartSuperviseApp(ctk.CTk):
             self.set_status("SEARCH FINISHED — ALL FEEDS COMPLETE", ACCENT_GREEN)
             self.active_feeds_label.configure(text="📹  FEEDS: All Completed")
             self.left_panel.start_btn.configure(state="normal")
+            if hasattr(self.left_panel, "pause_btn"):
+                self.left_panel.pause_btn.configure(state="disabled", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
             self.left_panel.stop_btn.configure(state="disabled")
         try:
             self.after(0, _update_ui)

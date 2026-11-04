@@ -231,8 +231,19 @@ class CenterGrid(ctk.CTkFrame):
             font=ctk.CTkFont(size=10)
         ).pack(side="left", padx=2, pady=3)
 
+        self.fov_toggle_btn = ctk.CTkButton(
+            self.map_tools_bar, text="👁️ Hide FOV Cones",
+            command=self._on_toggle_fov,
+            fg_color="#182436", hover_color="#20344d",
+            text_color=ACCENT_AMBER,
+            border_width=1, border_color=ACCENT_AMBER,
+            corner_radius=6, height=22, width=125,
+            font=ctk.CTkFont(size=10, weight="bold")
+        )
+        self.fov_toggle_btn.pack(side="left", padx=2, pady=3)
+
         ctk.CTkLabel(
-            self.map_tools_bar, text="💡 Tip: Click & drag camera pins (CAM 1-4) on the blueprint to calibrate positions!",
+            self.map_tools_bar, text="💡 Drag pin center to move  |  Drag outer ring to rotate 360° heading",
             font=ctk.CTkFont(size=9, weight="bold"),
             text_color=ACCENT_AMBER
         ).pack(side="right", padx=8, pady=3)
@@ -331,27 +342,53 @@ class CenterGrid(ctk.CTkFrame):
         self.app.set_status("Camera pin positions reset to default", color=ACCENT_GREEN)
         self.render_full_map()
 
+    def _on_toggle_fov(self):
+        """Toggles visibility of the CCTV Field-of-View vision cones on the map."""
+        is_shown = self.app.map_visualizer.toggle_fov_cones()
+        self.fov_toggle_btn.configure(
+            text="👁️ Hide FOV Cones" if is_shown else "👁️ Show FOV Cones",
+            text_color=ACCENT_AMBER if is_shown else TEXT_DIM
+        )
+        self.render_full_map()
+
+    def _get_cardinal(self, deg):
+        """Converts angle in degrees to 8-point compass cardinal direction."""
+        dirs = ["East", "SE", "South", "SW", "West", "NW", "North", "NE"]
+        idx = int(((deg + 22.5) % 360.0) / 45.0) % 8
+        return dirs[idx]
+
     def _on_map_press(self, event):
-        """Detects if user clicked on any camera node pin to begin dragging."""
+        """
+        Interactive Dual-Zone Pin Controller:
+        - Inner circle (d <= 18px): Drag to reposition camera on floorplan.
+        - Outer ring (18px < d <= 42px): Rotate camera heading 360°.
+        """
         fw = self.full_map_canvas.winfo_width() or 640
         fh = self.full_map_canvas.winfo_height() or 460
-        click_radius = 24
         self._drag_node_idx = None
+        self._rotate_node_idx = None
         for idx, (nu, nv) in enumerate(self.app.map_visualizer.node_positions):
             nx = int(nu * fw)
             ny = int(nv * fh)
-            if math.hypot(event.x - nx, event.y - ny) <= click_radius:
+            d = math.hypot(event.x - nx, event.y - ny)
+            if d <= 18:
                 self._drag_node_idx = idx
                 self.app.map_visualizer.dragged_node_idx = idx
                 self.full_map_canvas.configure(cursor="fleur")
                 self.render_full_map()
                 break
+            elif d <= 42:
+                self._rotate_node_idx = idx
+                self.app.map_visualizer.rotating_node_idx = idx
+                self.full_map_canvas.configure(cursor="crosshair")
+                self.render_full_map()
+                break
 
     def _on_map_drag(self, event):
-        """Updates camera node position dynamically during drag-and-drop."""
+        """Handles real-time pin repositioning or 360° heading rotation."""
+        fw = self.full_map_canvas.winfo_width() or 640
+        fh = self.full_map_canvas.winfo_height() or 460
         if getattr(self, "_drag_node_idx", None) is not None:
-            fw = self.full_map_canvas.winfo_width() or 640
-            fh = self.full_map_canvas.winfo_height() or 460
             nu = max(0.04, min(0.96, event.x / fw))
             nv = max(0.06, min(0.94, event.y / fh))
             self.app.map_visualizer.node_positions[self._drag_node_idx] = (nu, nv)
@@ -361,42 +398,78 @@ class CenterGrid(ctk.CTkFrame):
                     text=f"📍 Relocating CAM {cam_num} to ({int(nu*100)}%, {int(nv*100)}%)"
                 )
             self.render_full_map()
+        elif getattr(self, "_rotate_node_idx", None) is not None:
+            idx = self._rotate_node_idx
+            nu, nv = self.app.map_visualizer.node_positions[idx]
+            nx = int(nu * fw)
+            ny = int(nv * fh)
+            deg = (math.degrees(math.atan2(event.y - ny, event.x - nx))) % 360.0
+            self.app.map_visualizer.node_angles[idx] = round(deg, 1)
+            if hasattr(self, "map_step_label"):
+                cardinal = self._get_cardinal(deg)
+                self.map_step_label.configure(
+                    text=f"🎯 Aiming CAM {idx+1} at {int(deg)}° ({cardinal})"
+                )
+            self.render_full_map()
 
     def _on_map_release(self, event):
-        """Finalizes camera pin placement and saves coordinates persistently to models/map_config.json."""
+        """Finalizes pin movement or rotation and saves to models/map_config.json."""
+        saved_something = False
         if getattr(self, "_drag_node_idx", None) is not None:
             idx = self._drag_node_idx
             self._drag_node_idx = None
             self.app.map_visualizer.dragged_node_idx = None
-            self.full_map_canvas.configure(cursor="")
-            self.app.map_visualizer.save_config()
             if hasattr(self, "map_step_label"):
                 self.map_step_label.configure(text=f"💾 Saved Camera {idx + 1} position!")
+            saved_something = True
+        if getattr(self, "_rotate_node_idx", None) is not None:
+            idx = self._rotate_node_idx
+            self._rotate_node_idx = None
+            self.app.map_visualizer.rotating_node_idx = None
+            if hasattr(self, "map_step_label"):
+                deg = int(self.app.map_visualizer.node_angles[idx])
+                cardinal = self._get_cardinal(deg)
+                self.map_step_label.configure(text=f"💾 Saved Camera {idx + 1} heading ({deg}° {cardinal})")
+            saved_something = True
+        if saved_something:
+            self.full_map_canvas.configure(cursor="")
+            self.app.map_visualizer.save_config()
             self.render_full_map()
 
     def _on_map_motion(self, event):
-        """Changes cursor to fleur when hovering over draggable camera pins."""
-        if getattr(self, "_drag_node_idx", None) is not None:
+        """Updates cursor dynamically based on whether hovering pin body (move) or rotation ring (aim)."""
+        if getattr(self, "_drag_node_idx", None) is not None or getattr(self, "_rotate_node_idx", None) is not None:
             return
         fw = self.full_map_canvas.winfo_width() or 640
         fh = self.full_map_canvas.winfo_height() or 460
         hover_idx = None
+        hover_part = None
         for idx, (nu, nv) in enumerate(self.app.map_visualizer.node_positions):
             nx = int(nu * fw)
             ny = int(nv * fh)
-            if math.hypot(event.x - nx, event.y - ny) <= 24:
+            d = math.hypot(event.x - nx, event.y - ny)
+            if d <= 18:
                 hover_idx = idx
+                hover_part = "body"
                 break
-        if hover_idx != self.app.map_visualizer.hovered_node_idx:
+            elif d <= 42:
+                hover_idx = idx
+                hover_part = "aim"
+                break
+        if hover_idx != self.app.map_visualizer.hovered_node_idx or hover_part != getattr(self.app.map_visualizer, "hovered_part", None):
             self.app.map_visualizer.hovered_node_idx = hover_idx
-            self.full_map_canvas.configure(cursor="fleur" if hover_idx is not None else "")
+            self.app.map_visualizer.hovered_part = hover_part
+            cursor_type = "fleur" if hover_part == "body" else ("crosshair" if hover_part == "aim" else "")
+            self.full_map_canvas.configure(cursor=cursor_type)
             self.render_full_map()
 
     def _on_map_leave(self, event):
-        """Clears hover halo and resets cursor when mouse leaves the canvas."""
-        if self.app.map_visualizer.hovered_node_idx is not None:
+        """Clears hover states and resets cursor when mouse leaves the canvas."""
+        if self.app.map_visualizer.hovered_node_idx is not None or self.app.map_visualizer.hovered_part is not None:
             self.app.map_visualizer.hovered_node_idx = None
+            self.app.map_visualizer.hovered_part = None
             self.full_map_canvas.configure(cursor="")
+            self.render_full_map()
             self.render_full_map()
 
     def switch_to_map(self):
@@ -676,18 +749,30 @@ class CenterGrid(ctk.CTkFrame):
         self.update_last_seen_banner()
 
     def update_last_seen_banner(self):
-        """Dirty-checked banner update to avoid redundant configure calls."""
+        """Dirty-checked banner update with Multi-Camera Overlap Fusion styling."""
         last_known = self.app.tracker.last_known
         if last_known.get("camera"):
             vt = last_known.get("video_time", "")
             vt_text = f"  ·  ⏱ Time: {vt}" if vt else ""
-            loc_text = (
-                f"📍 Current / Last Known Location: {last_known['camera']}"
-                f"{vt_text}  ·  Confidence: {int(last_known['confidence']*100)}%"
-            )
-            is_lost = self.app.tracker.is_target_lost() if self.app.video_engine.is_running else False
-            color = ACCENT_RED if is_lost else ACCENT_GREEN
-            bg_col = "#2e0a0a" if is_lost else "#0a2e1a"
+            is_overlap = last_known.get("is_overlap", False)
+            overlap_cams = last_known.get("overlap_cameras", [])
+
+            if is_overlap and overlap_cams:
+                cams_str = ", ".join(overlap_cams)
+                loc_text = (
+                    f"📍 Primary: {last_known['camera']}{vt_text}  ·  "
+                    f"🤝 Overlap Coverage: {cams_str}  ·  Confidence: {int(last_known['confidence']*100)}%"
+                )
+                color = "#f5b8ff"
+                bg_col = "#380d44"
+            else:
+                loc_text = (
+                    f"📍 Current / Last Known Location: {last_known['camera']}"
+                    f"{vt_text}  ·  Confidence: {int(last_known['confidence']*100)}%"
+                )
+                is_lost = self.app.tracker.is_target_lost() if self.app.video_engine.is_running else False
+                color = ACCENT_RED if is_lost else ACCENT_GREEN
+                bg_col = "#2e0a0a" if is_lost else "#0a2e1a"
         else:
             loc_text = "Last Known Location: Ready to search"
             color = TEXT_DIM

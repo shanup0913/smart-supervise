@@ -87,7 +87,34 @@ class LocationTracker:
         video_time_str = video_time if video_time else now_str.split(" ")[1]
 
         with self._lock:
-            # Always update real-time last known location
+            # ── Multi-Camera Overlap Fusion Window ──
+            # Maintain active detections within a 2.5-second sliding window
+            if not hasattr(self, "recent_sightings"):
+                self.recent_sightings = {}
+
+            self.recent_sightings = {
+                cid: d for cid, d in self.recent_sightings.items()
+                if (now_epoch - d["epoch"]) <= 2.5
+            }
+            self.recent_sightings[camera_id] = {
+                "camera_name": camera_name,
+                "confidence": round(confidence, 3),
+                "epoch": now_epoch,
+                "video_time": video_time_str
+            }
+
+            # Identify concurrent sightings in other cameras (Overlap Zone)
+            concurrent_cams = [
+                d["camera_name"] for cid, d in self.recent_sightings.items()
+                if cid != camera_id and (now_epoch - d["epoch"]) <= 2.0
+            ]
+            concurrent_ids = [
+                cid for cid, d in self.recent_sightings.items()
+                if cid != camera_id and (now_epoch - d["epoch"]) <= 2.0
+            ]
+            is_overlap = len(concurrent_cams) > 0
+
+            # Always update real-time last known location with overlap telemetry
             self.last_known = {
                 "camera": camera_name,
                 "camera_id": camera_id,
@@ -95,7 +122,10 @@ class LocationTracker:
                 "video_time": video_time_str,
                 "confidence": round(confidence, 3),
                 "snapshot_path": snapshot_path or "",
-                "time_epoch": now_epoch
+                "time_epoch": now_epoch,
+                "is_overlap": is_overlap,
+                "overlap_cameras": concurrent_cams,
+                "active_camera_ids": list(self.recent_sightings.keys())
             }
 
             # ── Scenario 1: First Ever Sighting (Trip Origin) ──
@@ -117,7 +147,9 @@ class LocationTracker:
                     "video_time": video_time_str,
                     "confidence": round(confidence, 3),
                     "snapshot_path": snapshot_path or "",
-                    "time_epoch": now_epoch
+                    "time_epoch": now_epoch,
+                    "is_overlap": is_overlap,
+                    "overlap_cameras": list(concurrent_cams)
                 }
                 self.timeline.append(entry)
                 self.journey_route.append({
@@ -127,7 +159,8 @@ class LocationTracker:
                     "video_time": video_time_str,
                     "timestamp": now_str,
                     "confidence": round(confidence, 3),
-                    "snapshot_path": snapshot_path or ""
+                    "snapshot_path": snapshot_path or "",
+                    "is_overlap": is_overlap
                 })
                 return True
 
@@ -145,6 +178,10 @@ class LocationTracker:
                     if snapshot_path:
                         active_entry["snapshot_path"] = snapshot_path
 
+                    if is_overlap and concurrent_cams:
+                        active_entry["is_overlap"] = True
+                        active_entry["overlap_cameras"] = list(concurrent_cams)
+
                     start_t = active_entry.get("entry_time", video_time_str)
                     if start_t != video_time_str:
                         active_entry["dwell_str"] = f"{start_t} -> {video_time_str}"
@@ -154,10 +191,31 @@ class LocationTracker:
                     self.journey_route[-1]["exit_time"] = video_time_str
                     if confidence > self.journey_route[-1]["confidence"]:
                         self.journey_route[-1]["confidence"] = round(confidence, 3)
+                    if is_overlap:
+                        self.journey_route[-1]["is_overlap"] = True
 
                 return False  # Target is stationary in current camera; no new hop!
 
             # ── Scenario 3: Potential Camera Transition (Transit / Return) ──
+            # Overlap Zone Hysteresis:
+            # If current station camera is STILL detecting the target concurrently:
+            cur_active_info = self.recent_sightings.get(self.current_camera_id)
+            cur_is_still_active = cur_active_info and (now_epoch - cur_active_info["epoch"]) <= 2.2
+
+            if cur_is_still_active:
+                # Both cameras see target simultaneously (Overlap region!)
+                cur_conf = cur_active_info["confidence"]
+                # Only switch primary camera if the candidate camera has a SIGNIFICANTLY higher confidence (> 12% margin)
+                if confidence < (cur_conf + 0.12):
+                    # Stay anchored to current camera; mark overlap in timeline
+                    if self.timeline:
+                        self.timeline[-1]["last_seen_time"] = video_time_str
+                        self.timeline[-1]["is_overlap"] = True
+                        if "overlap_cameras" not in self.timeline[-1]:
+                            self.timeline[-1]["overlap_cameras"] = []
+                        if camera_name not in self.timeline[-1]["overlap_cameras"]:
+                            self.timeline[-1]["overlap_cameras"].append(camera_name)
+                    return False  # Suppress ping-pong flicker in overlap area!
             # Anti-flicker filter: If seen in a different camera, require either:
             # 1. High confidence (>= 0.62)
             # 2. Or confirmed over 2 consecutive detections

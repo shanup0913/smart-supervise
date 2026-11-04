@@ -1,14 +1,19 @@
 """
-MapVisualizer 2.0: Interactive 2D Surveillance Radar & Floorplan Blueprint Visualizer.
+MapVisualizer 2.5: Interactive 2D Surveillance Radar, Floorplan Blueprint & CCTV FOV Coverage Visualizer.
 
 Key Capabilities:
-1. Custom Blueprint / Floorplan Upload (.png, .jpg, .jpeg, .bmp, .webp) with auto-scaling
-   and high-contrast dark overlay.
-2. Interactive Drag-and-Drop Camera Pin Placement ("Locate Camera") with real-time feedback.
-3. Persistent Configuration: saves node coordinates and blueprint path to models/map_config.json.
-4. Bidirectional Path Visualization (A -> B and B -> A) with curved Bezier offset arcs.
-5. Sequential Blinking Tracer Loop (Start to End Trip Replay) with speed controls and pause.
-6. Live Pulsing GPS Target Pin at Last Known Location.
+1. Rotatable 360° CCTV Vision Cones (Field of View):
+   - Realistic 70° vision wedges projecting from each camera.
+   - Dual-zone interaction: click & drag center to reposition, drag outer ring to rotate 360° heading.
+2. DORI Range Rings (IEC/EN 62676-4 Standard):
+   - Identification Zone (Inner - 35%): sharp facial biometrics (YuNet).
+   - Recognition Zone (Mid - 65%): whole-body clothing & color Re-ID.
+   - Detection Zone (Outer - 100%): YOLOv8 presence & motion alert.
+3. Multi-Camera Overlap Fusion Indicator:
+   - Synchronized dual-camera pulsing and shared intersection links when target enters overlap zone.
+4. Custom Blueprint / Floorplan Upload (.png, .jpg, .jpeg, .bmp, .webp) with dark-tinted contrast overlay.
+5. Persistent Configuration: saves coordinates, angles, and blueprint path to models/map_config.json.
+6. Bidirectional Bezier Paths & Sequential Blinking Tracer Loop.
 """
 
 import os
@@ -24,6 +29,13 @@ DEFAULT_NODE_POSITIONS = [
     (0.22, 0.72),  # Camera 4 (Cafeteria / West Plaza)
 ]
 
+DEFAULT_NODE_ANGLES = [
+    45.0,   # Camera 1: Facing South-East (45°) towards center
+    135.0,  # Camera 2: Facing South-West (135°) towards center
+    225.0,  # Camera 3: Facing North-West (225°) towards center
+    315.0,  # Camera 4: Facing North-East (315°) towards center
+]
+
 
 class MapVisualizer:
     def __init__(self):
@@ -33,15 +45,20 @@ class MapVisualizer:
         self.config_path = os.path.join(self.config_dir, "map_config.json")
 
         self.node_positions = list(DEFAULT_NODE_POSITIONS)
+        self.node_angles = list(DEFAULT_NODE_ANGLES)
+        self.show_fov_cones = True
+        self.fov_span_deg = 70.0
         self.custom_blueprint_path = None
 
         # Image caching to avoid re-decoding image every 60ms
         self._cached_blueprint_tk = None
         self._cached_blueprint_dim = None
 
-        # Interactive Drag & Hover State
+        # Interactive Drag, Rotation & Hover State
         self.dragged_node_idx = None
+        self.rotating_node_idx = None
         self.hovered_node_idx = None
+        self.hovered_part = None  # "body" or "aim"
 
         # Journey Playback Animation
         self.tracer_progress = 0.0
@@ -54,7 +71,7 @@ class MapVisualizer:
         self.load_config()
 
     def load_config(self):
-        """Loads persistent camera node positions and custom blueprint path."""
+        """Loads persistent camera positions, headings, FOV toggles, and blueprint path."""
         try:
             if os.path.isfile(self.config_path):
                 with open(self.config_path, "r", encoding="utf-8") as f:
@@ -64,21 +81,30 @@ class MapVisualizer:
                     self.node_positions = [
                         (float(p[0]), float(p[1])) for p in positions
                     ]
+                angles = cfg.get("node_angles")
+                if angles and isinstance(angles, list) and len(angles) == 4:
+                    self.node_angles = [float(a) % 360.0 for a in angles]
+                if "show_fov_cones" in cfg:
+                    self.show_fov_cones = bool(cfg["show_fov_cones"])
                 bp_path = cfg.get("custom_blueprint_path")
                 if bp_path and os.path.isfile(bp_path):
                     self.custom_blueprint_path = bp_path
         except Exception:
             self.node_positions = list(DEFAULT_NODE_POSITIONS)
+            self.node_angles = list(DEFAULT_NODE_ANGLES)
+            self.show_fov_cones = True
             self.custom_blueprint_path = None
 
     def save_config(self):
-        """Persists current camera positions and custom blueprint path to models/map_config.json."""
+        """Persists current camera positions, angles, and custom blueprint path to models/map_config.json."""
         try:
             os.makedirs(self.config_dir, exist_ok=True)
             cfg = {
                 "node_positions": [
                     [round(p[0], 4), round(p[1], 4)] for p in self.node_positions
                 ],
+                "node_angles": [round(a, 1) for a in self.node_angles],
+                "show_fov_cones": self.show_fov_cones,
                 "custom_blueprint_path": self.custom_blueprint_path
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -91,7 +117,6 @@ class MapVisualizer:
         if not image_path or not os.path.isfile(image_path):
             return False
         try:
-            # Verify image can be opened by PIL
             with Image.open(image_path) as test_img:
                 test_img.verify()
             self.custom_blueprint_path = image_path
@@ -110,8 +135,9 @@ class MapVisualizer:
         self.save_config()
 
     def reset_to_default(self):
-        """Resets all camera pin coordinates to standard facility positions."""
+        """Resets all camera pin coordinates and angles to standard facility defaults."""
         self.node_positions = list(DEFAULT_NODE_POSITIONS)
+        self.node_angles = list(DEFAULT_NODE_ANGLES)
         self.save_config()
 
     def set_node_position(self, cam_idx, u, v):
@@ -121,6 +147,18 @@ class MapVisualizer:
             clamped_v = max(0.06, min(0.94, float(v)))
             self.node_positions[cam_idx] = (clamped_u, clamped_v)
             self.save_config()
+
+    def set_node_angle(self, cam_idx, deg):
+        """Updates heading angle (0° - 360°) for a specific camera."""
+        if 0 <= cam_idx < 4:
+            self.node_angles[cam_idx] = float(deg) % 360.0
+            self.save_config()
+
+    def toggle_fov_cones(self):
+        """Toggles visibility of the CCTV FOV coverage vision cones."""
+        self.show_fov_cones = not self.show_fov_cones
+        self.save_config()
+        return self.show_fov_cones
 
     def toggle_pause(self):
         """Toggles pause/play for the trip tracer animation."""
@@ -193,9 +231,22 @@ class MapVisualizer:
         y = (t_inv ** 2) * y0 + 2.0 * t_inv * t * yc + (t ** 2) * y1
         return x, y
 
+    def _draw_arc_line(self, canvas, cx, cy, radius, start_rad, end_rad, fill, width=1, dash=None, steps=10):
+        """Draws a smooth curved arc segment using interpolated line segments."""
+        pts = []
+        d_rad = (end_rad - start_rad) / max(1, steps)
+        for s in range(steps + 1):
+            rad = start_rad + s * d_rad
+            px = cx + radius * math.cos(rad)
+            py = cy + radius * math.sin(rad)
+            pts.extend([px, py])
+        if len(pts) >= 4:
+            canvas.create_line(*pts, fill=fill, width=width, dash=dash, smooth=True)
+
     def draw_map(self, canvas, width, height, route=None, camera_names=None, last_known=None, pulse_tick=0, is_mini=False):
         """
-        Renders the complete 2D Rapido surveillance map or custom blueprint onto Tkinter Canvas.
+        Renders the complete 2D Rapido surveillance map, custom blueprint,
+        rotatable CCTV FOV vision cones, DORI zones, and multi-camera overlap highlights.
         """
         canvas.delete("all")
         if width <= 10 or height <= 10:
@@ -213,20 +264,16 @@ class MapVisualizer:
 
         if has_custom_blueprint:
             try:
-                # Update image cache if dimensions changed
                 if self._cached_blueprint_dim != (width, height):
                     raw_img = Image.open(self.custom_blueprint_path).convert("RGBA")
                     resized = raw_img.resize((width, height), Image.Resampling.LANCZOS)
-
-                    # Apply subtle dark tinted veil for ultra-high contrast on light blueprints
                     overlay = Image.new("RGBA", (width, height), (10, 12, 22, 110))
                     blended = Image.alpha_composite(resized, overlay)
-
                     self._cached_blueprint_tk = ImageTk.PhotoImage(blended)
                     self._cached_blueprint_dim = (width, height)
 
                 canvas.create_image(width // 2, height // 2, image=self._cached_blueprint_tk)
-                canvas._bg_img = self._cached_blueprint_tk  # Keep reference to prevent GC
+                canvas._bg_img = self._cached_blueprint_tk
             except Exception:
                 has_custom_blueprint = False
 
@@ -270,7 +317,112 @@ class MapVisualizer:
             canvas.create_line(nodes_xy[p1][0], nodes_xy[p1][1], nodes_xy[p2][0], nodes_xy[p2][1],
                                fill=corridor_color, width=corridor_w, dash=(6, 4))
 
-        # ── 3. Bidirectional Rapido Travel Routes (A -> B and B -> A) ────────
+        # ── 3. CCTV Field of View (FOV) Vision Cones & DORI Zones ────────────
+        active_cam_ids = last_known.get("active_camera_ids", [])
+        curr_cam_id = last_known.get("camera_id")
+        if curr_cam_id is not None and curr_cam_id not in active_cam_ids:
+            active_cam_ids.append(curr_cam_id)
+        is_overlap_mode = last_known.get("is_overlap", False)
+
+        if self.show_fov_cones:
+            r_total = 115 if not is_mini else 46
+            r_id = int(0.35 * r_total)
+            r_recog = int(0.65 * r_total)
+            r_detect = r_total
+            half_rad = math.radians(self.fov_span_deg / 2.0)
+
+            for i, (nx, ny) in enumerate(nodes_xy):
+                deg = self.node_angles[i]
+                center_rad = math.radians(deg)
+                start_rad = center_rad - half_rad
+                end_rad = center_rad + half_rad
+
+                is_cam_active = (i in active_cam_ids)
+                is_cam_dragged = (i == self.dragged_node_idx)
+                is_cam_rotating = (i == self.rotating_node_idx)
+                is_cam_hovered = (i == self.hovered_node_idx)
+
+                # Cone line styling
+                if is_cam_active:
+                    cone_col = "#e040fb" if is_overlap_mode else "#00e676"
+                    cone_w = 2
+                else:
+                    cone_col = "#253452"
+                    cone_w = 1
+
+                # 3A. Boundary Sight Rays (Left, Right, and Center Aim Line)
+                lx = nx + int(r_detect * math.cos(start_rad))
+                ly = ny + int(r_detect * math.sin(start_rad))
+                rx = nx + int(r_detect * math.cos(end_rad))
+                ry = ny + int(r_detect * math.sin(end_rad))
+                mx = nx + int(r_detect * math.cos(center_rad))
+                my = ny + int(r_detect * math.sin(center_rad))
+
+                canvas.create_line(nx, ny, lx, ly, fill=cone_col, width=cone_w)
+                canvas.create_line(nx, ny, rx, ry, fill=cone_col, width=cone_w)
+                canvas.create_line(nx, ny, mx, my, fill=cone_col, width=1, dash=(3, 3))
+
+                # 3B. DORI Concentric Distance Rings
+                # Inner Arc: Identification (Cyan)
+                self._draw_arc_line(canvas, nx, ny, r_id, start_rad, end_rad,
+                                    fill="#00f5ff" if is_cam_active else "#164555",
+                                    width=1, dash=(2, 2))
+
+                # Mid Arc: Recognition (Green)
+                self._draw_arc_line(canvas, nx, ny, r_recog, start_rad, end_rad,
+                                    fill="#00e676" if is_cam_active else "#144830",
+                                    width=1, dash=(3, 3))
+
+                # Outer Arc: Detection (Amber)
+                self._draw_arc_line(canvas, nx, ny, r_detect, start_rad, end_rad,
+                                    fill="#ffb300" if is_cam_active else "#4a3c18",
+                                    width=1)
+
+                # 3C. DORI Zone Labels (Full Map Mode)
+                if not is_mini:
+                    id_lbl_x = nx + int((r_id * 0.75) * math.cos(center_rad))
+                    id_lbl_y = ny + int((r_id * 0.75) * math.sin(center_rad))
+                    canvas.create_text(id_lbl_x, id_lbl_y, text="ID", fill="#00f5ff", font=("Arial", 6, "bold"))
+
+                    rec_lbl_x = nx + int(((r_id + r_recog) / 2.0) * math.cos(center_rad))
+                    rec_lbl_y = ny + int(((r_id + r_recog) / 2.0) * math.sin(center_rad))
+                    canvas.create_text(rec_lbl_x, rec_lbl_y, text="RECOG", fill="#00e676", font=("Arial", 6))
+
+                    det_lbl_x = nx + int(((r_recog + r_detect) / 2.0) * math.cos(center_rad))
+                    det_lbl_y = ny + int(((r_recog + r_detect) / 2.0) * math.sin(center_rad))
+                    canvas.create_text(det_lbl_x, det_lbl_y, text="DETECT", fill="#ffb300", font=("Arial", 6))
+
+                # 3D. Active Radar Pulse Sweep through the Vision Cone
+                if is_cam_active:
+                    sweep_r = int(((pulse_tick * 4) % r_detect) + 16)
+                    self._draw_arc_line(canvas, nx, ny, sweep_r, start_rad, end_rad,
+                                        fill="#e040fb" if is_overlap_mode else "#00e676",
+                                        width=2)
+
+                # 3E. Aiming Handle / Heading Indicator Chevron
+                handle_r = 30 if not is_mini else 16
+                hx = nx + int(handle_r * math.cos(center_rad))
+                hy = ny + int(handle_r * math.sin(center_rad))
+
+                # Aiming handle tip
+                h_col = "#00f5ff" if (is_cam_rotating or (is_cam_hovered and self.hovered_part == "aim")) else cone_col
+                canvas.create_oval(hx - 3, hy - 3, hx + 3, hy + 3, fill=h_col, outline="#ffffff", width=1)
+
+        # 3F. Multi-Camera Overlap Connection Highlight
+        if is_overlap_mode and len(active_cam_ids) >= 2:
+            p_first = nodes_xy[active_cam_ids[0]]
+            p_second = nodes_xy[active_cam_ids[1]]
+            canvas.create_line(p_first[0], p_first[1], p_second[0], p_second[1],
+                               fill="#e040fb", width=3, dash=(6, 4))
+            mid_ox = (p_first[0] + p_second[0]) // 2
+            mid_oy = (p_first[1] + p_second[1]) // 2
+            if not is_mini:
+                canvas.create_rectangle(mid_ox - 72, mid_oy - 9, mid_ox + 72, mid_oy + 9,
+                                        fill="#2d0a36", outline="#e040fb", width=1)
+                canvas.create_text(mid_ox, mid_oy, text="🤝 DUAL OVERLAP ZONE",
+                                   fill="#f5b8ff", font=("Arial", 7, "bold"))
+
+        # ── 4. Bidirectional Rapido Travel Routes (A -> B and B -> A) ────────
         visited_cam_indices = []
         hop_splines = []
 
@@ -308,13 +460,13 @@ class MapVisualizer:
                     canvas.create_line(p1[0], p1[1], cx, cy, p2[0], p2[1],
                                        fill=glow_color, width=glow_w, smooth=True, capstyle=tk.ROUND)
 
-                    # Core vibrant neon lane (Cyan for forward, Amber for return)
+                    # Core vibrant neon lane
                     core_color = "#00f5ff" if is_forward else "#ffb300"
                     core_w = 3 if not is_mini else 2
                     canvas.create_line(p1[0], p1[1], cx, cy, p2[0], p2[1],
                                        fill=core_color, width=core_w, smooth=True, capstyle=tk.ROUND)
 
-                    # Directional Motion Chevrons (> > >) along curve
+                    # Directional Motion Chevrons along curve
                     for t_arrow in [0.35, 0.65]:
                         ax, ay = self._eval_bezier(p1, (cx, cy), p2, t_arrow)
                         tx, ty = self._eval_bezier(p1, (cx, cy), p2, min(1.0, t_arrow + 0.05))
@@ -340,7 +492,7 @@ class MapVisualizer:
                                                 fill="#080914", outline=core_color, width=1)
                         canvas.create_text(mx, my, text=badge_txt, fill=core_color, font=("Arial", 7, "bold"))
 
-        # ── 4. Sequential Blinking Tracer Loop ───────────────────────────────
+        # ── 5. Sequential Blinking Tracer Loop ───────────────────────────────
         if hop_splines:
             total_hops = len(hop_splines)
             cur_hop_idx = min(total_hops - 1, max(0, int(self.tracer_progress)))
@@ -401,20 +553,33 @@ class MapVisualizer:
                                    text=f"🏁 TRIP COMPLETE · ARRIVED: {dest_cam_name} @ {dest_time}",
                                    fill="#b9f6ca", font=("Arial", 9, "bold"))
 
-        # ── 5. Camera Nodes (Interactive Draggable Pins in Full Map) ─────────
+        # ── 6. Camera Nodes (Interactive Pins & Rotation Handles) ────────────
         node_radius = 18 if not is_mini else 10
         for i, (nx, ny) in enumerate(nodes_xy):
             is_visited = i in visited_cam_indices
             is_current = (last_known.get("camera") and self._get_cam_idx(last_known.get("camera")) == i)
             is_dragged = (i == self.dragged_node_idx)
+            is_rotating = (i == self.rotating_node_idx)
             is_hovered = (i == self.hovered_node_idx)
 
-            # Draggable Interaction Halo
+            # Outer Interaction / Rotation Ring
+            if not is_mini:
+                rot_ring_r = 30
+                if is_rotating:
+                    canvas.create_oval(nx - rot_ring_r, ny - rot_ring_r,
+                                       nx + rot_ring_r, ny + rot_ring_r,
+                                       outline="#00f5ff", width=2, dash=(2, 2))
+                elif is_hovered and self.hovered_part == "aim":
+                    canvas.create_oval(nx - rot_ring_r, ny - rot_ring_r,
+                                       nx + rot_ring_r, ny + rot_ring_r,
+                                       outline="#00f5ff", width=1, dash=(3, 3))
+
+            # Draggable Reposition Halo
             if is_dragged:
                 canvas.create_oval(nx - node_radius - 8, ny - node_radius - 8,
                                    nx + node_radius + 8, ny + node_radius + 8,
                                    outline="#ffd700", width=3, dash=(4, 2))
-            elif is_hovered:
+            elif is_hovered and self.hovered_part == "body":
                 canvas.create_oval(nx - node_radius - 6, ny - node_radius - 6,
                                    nx + node_radius + 6, ny + node_radius + 6,
                                    outline="#00f5ff", width=2)
@@ -446,37 +611,51 @@ class MapVisualizer:
                                    fill="#c0c4de" if is_visited else "#5a5e82",
                                    font=("Arial", 9, "bold" if is_visited else "normal"))
 
-                # Visual drag handle hint tag
-                if is_hovered or is_dragged:
+                # Contextual Interactive Hint
+                if is_rotating:
+                    deg = int(self.node_angles[i])
                     canvas.create_text(nx, ny - node_radius - 10,
-                                       text="✥ DRAG PIN" if not is_dragged else "📌 PLACING...",
-                                       fill="#ffd700" if is_dragged else "#00f5ff",
-                                       font=("Arial", 7, "bold"))
+                                       text=f"🎯 AIMING {deg}°",
+                                       fill="#00f5ff", font=("Arial", 7, "bold"))
+                elif is_dragged:
+                    canvas.create_text(nx, ny - node_radius - 10,
+                                       text="📌 MOVING PIN...",
+                                       fill="#ffd700", font=("Arial", 7, "bold"))
+                elif is_hovered:
+                    hint = "✥ DRAG TO MOVE" if self.hovered_part == "body" else "🔄 DRAG TO AIM"
+                    canvas.create_text(nx, ny - node_radius - 10,
+                                       text=hint, fill="#00f5ff", font=("Arial", 7, "bold"))
 
-        # ── 6. Live Pulsing GPS Target Pin (Last Known Location) ─────────────
+        # ── 7. Live Pulsing GPS Target Pin (Last Known Location) ─────────────
         if last_known and (last_known.get("camera") or last_known.get("camera_id") is not None):
             curr_idx = self._get_cam_idx(last_known, camera_names)
             px, py = nodes_xy[curr_idx]
 
+            pulse_col = "#e040fb" if is_overlap_mode else "#ff1744"
             pulse_r = (pulse_tick % 12) * (3 if not is_mini else 2) + node_radius
             canvas.create_oval(px - pulse_r, py - pulse_r, px + pulse_r, py + pulse_r,
-                               outline="#ff1744", width=2 if not is_mini else 1)
+                               outline=pulse_col, width=2 if not is_mini else 1)
 
             if not is_mini:
                 target_name = last_known.get("target_name") or "TARGET"
                 vt = last_known.get("video_time") or ""
                 time_str = f" @ {vt}" if vt else ""
                 cam_str = last_known.get("camera") or f"Camera {curr_idx + 1}"
-                banner_txt = f"📍 {target_name.upper()} (CURRENT: {cam_str}{time_str})"
+
+                if is_overlap_mode:
+                    overlap_list = ", ".join(last_known.get("overlap_cameras", []))
+                    banner_txt = f"📍 {target_name.upper()} (PRIMARY: {cam_str}{time_str}) · 🤝 OVERLAP: {overlap_list}"
+                else:
+                    banner_txt = f"📍 {target_name.upper()} (CURRENT: {cam_str}{time_str})"
 
                 bx = px
                 by = py - node_radius - 22
                 bw = max(100, len(banner_txt) * 7 + 16)
                 canvas.create_rectangle(bx - bw // 2, by - 10, bx + bw // 2, by + 10,
-                                        fill="#ff1744", outline="#ffffff", width=1)
+                                        fill=pulse_col, outline="#ffffff", width=1)
                 canvas.create_text(bx, by, text=banner_txt, fill="#ffffff", font=("Arial", 8, "bold"))
 
-        # ── 7. Origin Start Flag ─────────────────────────────────────────────
+        # ── 8. Origin Start Flag ─────────────────────────────────────────────
         if route and len(route) >= 1 and not is_mini:
             orig_idx = self._get_cam_idx(route[0], camera_names)
             ox, oy = nodes_xy[orig_idx]
@@ -486,7 +665,7 @@ class MapVisualizer:
                                     fill="#00c853", outline="#b9f6ca", width=1)
             canvas.create_text(ox, oy - node_radius - 14, text=orig_txt, fill="#000000", font=("Arial", 7, "bold"))
 
-        # ── 8. Top Telemetry HUD Bar (Full Map Mode) ─────────────────────────
+        # ── 9. Top Telemetry HUD Bar (Full Map Mode) ─────────────────────────
         if not is_mini:
             hud_y = 20
             canvas.create_rectangle(14, 8, width - 14, 34, fill="#0f1124", outline="#1f2348", width=1)
@@ -498,7 +677,8 @@ class MapVisualizer:
             status_col = "#00e676" if route else "#70759e"
 
             bp_tag = " [CUSTOM BLUEPRINT]" if has_custom_blueprint else " [STANDARD BLUEPRINT]"
-            hud_text = f"SURVEILLANCE RADAR MAP 2.0{bp_tag}   |   Hops: {hops} ({loc_count} Stations)   |   Last: {last_cam}   |   {status_txt}"
+            fov_tag = " | FOV: 70° DORI ON" if self.show_fov_cones else " | FOV: Hidden"
+            hud_text = f"SURVEILLANCE RADAR MAP 2.5{bp_tag}{fov_tag}   |   Hops: {hops} ({loc_count} Stations)   |   Last: {last_cam}   |   {status_txt}"
             canvas.create_text(24, hud_y, text=hud_text, fill=status_col, font=("Arial", 9, "bold"), anchor="w")
 
             comp_x = width - 40

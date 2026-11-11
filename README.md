@@ -1,3 +1,12 @@
+---
+title: SmartSupervise
+emoji: "📹"
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+---
+
 # Smart Supervise
 ## AI-Powered Multi-Camera CCTV Target Search & Journey Path Engine
 

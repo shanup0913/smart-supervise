@@ -132,16 +132,21 @@ class SmartSuperviseApp(ctk.CTk):
         """Throttled UI refresh loop: decouples rendering from video decoding for zero lag and no GDI leaks."""
         if getattr(self, "_is_closing", False):
             return
+        live_active = bool(self.video_engine.is_running and getattr(self.video_engine, "has_live_slots", False))
         try:
             self.pulse_tick += 1
 
+            gc_div = 180 if live_active else 100
+            clock_div = 9 if live_active else 5
+            left_div = 5 if live_active else 3
+
             # Garbage collect periodically to ensure OS GDI handles never hit 10,000 threshold
-            if self.pulse_tick % 100 == 0:
+            if self.pulse_tick % gc_div == 0:
                 gc.collect()
 
             if self.video_engine.is_running:
-                # Update clock in titlebar every 5 ticks (~300ms) to eliminate string churn
-                if self.pulse_tick % 5 == 0:
+                # Update clock in titlebar every ~300ms to eliminate string churn
+                if self.pulse_tick % clock_div == 0:
                     clock_str, _ = self.video_engine.get_clock_display()
                     self.global_clock_label.configure(text=f"⏱  CLOCK: {clock_str}")
 
@@ -151,15 +156,15 @@ class SmartSuperviseApp(ctk.CTk):
                         text=f"📹  FEEDS: {len(remaining_slots)}/{len(active_slots)} Active"
                     )
 
-                # Update Center Video Matrix at full 16-20 FPS for silky-smooth video
+                # Update Center Video Matrix (~30 FPS for live streams, ~16 FPS for file scans)
                 self.center_grid.update_view(self.video_engine)
 
-                # Update Left Panel progress badges (every 3 ticks ~180ms with zero-overhead dirty checking)
-                if self.pulse_tick % 3 == 0:
+                # Update Left Panel progress badges (~165ms with zero-overhead dirty checking)
+                if self.pulse_tick % left_div == 0:
                     self.left_panel.update_camera_progress(self.video_engine)
 
-                # Update Right Panel telemetry (every 5 ticks ~300ms)
-                if self.pulse_tick % 5 == 0:
+                # Update Right Panel telemetry (~300ms)
+                if self.pulse_tick % clock_div == 0:
                     self.right_panel.update_view()
             elif self.center_grid.display_mode.get() == "map":
                 # Keep map animations alive even when stopped
@@ -170,8 +175,9 @@ class SmartSuperviseApp(ctk.CTk):
             pass
         finally:
             if not getattr(self, "_is_closing", False):
+                tick_ms = 33 if live_active else 60
                 try:
-                    self.after(60, self._render_loop)
+                    self.after(tick_ms, self._render_loop)
                 except Exception:
                     pass
 

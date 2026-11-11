@@ -108,12 +108,12 @@ class TargetMatcher:
             return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
         return image_bgr
 
-    def _detect_face_and_feature(self, image_bgr):
+    def _detect_face_and_feature(self, image_bgr, pre_enhanced=False, fast_mode=False):
         """
         Multi-Stage Face Detection with lighting adaptation (Thread-Safe):
         1. YuNet at native scale.
         2. YuNet on head region (upper 55% of crop) at 2x upscale.
-        3. Haar Cascade as robust secondary fallback.
+        3. Haar Cascade as robust secondary fallback (skipped in fast_mode).
         Returns: (face_feature, face_box) or (None, None)
         """
         if self.face_detector is None or self.face_recognizer is None or image_bgr is None:
@@ -123,8 +123,8 @@ class TargetMatcher:
         if h < 20 or w < 20:
             return None, None
 
-        # Pre-enhance crop if lighting is dark
-        enhanced = self._enhance_lighting_if_dark(image_bgr)
+        # Pre-enhance crop if lighting is dark (avoid running twice if caller already enhanced)
+        enhanced = image_bgr if pre_enhanced else self._enhance_lighting_if_dark(image_bgr)
             
         with self._lock:
             # Stage 1: YuNet on native crop
@@ -143,10 +143,10 @@ class TargetMatcher:
             except Exception:
                 pass
 
-            # Stage 2: YuNet on head region (upper 55%) at 2x upscale
+            # Stage 2: YuNet on head region (upper 55%) at 2x upscale (only needed for smaller crops)
             try:
                 head_h = int(h * 0.55)
-                if head_h >= 20:
+                if head_h >= 20 and w < 220:
                     head_crop = enhanced[:head_h, :]
                     scaled_head = cv2.resize(head_crop, (w * 2, head_h * 2))
                     self.face_detector.setInputSize((w * 2, head_h * 2))
@@ -162,8 +162,8 @@ class TargetMatcher:
             except Exception:
                 pass
 
-            # Stage 3: Haar Cascade fallback
-            if self.haar_cascade is not None:
+            # Stage 3: Haar Cascade fallback (skipped in fast_mode to save ~15-30ms per non-face crop)
+            if not fast_mode and self.haar_cascade is not None:
                 try:
                     gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
                     haar_faces = self.haar_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(24, 24))
@@ -298,9 +298,11 @@ class TargetMatcher:
         self.target_name = target_name
         return self.add_target_photo(image_path_or_crop, angle_label=angle_label)
 
-    def compare(self, candidate_bgr_crop):
+    def compare(self, candidate_bgr_crop, fast_mode=False):
         """
         Compares candidate against all stored reference angles in the gallery.
+        Uses close-up downscale cap and lazy MobileNetV3 deep embedding so clear mismatches
+        short-circuit without burning neural network CPU cycles.
         Returns: (is_match: bool, best_similarity_score: float)
         """
         with self._lock:
@@ -309,22 +311,45 @@ class TargetMatcher:
             profiles_snapshot = list(self.target_profiles)
 
         # Stricter candidate size check: ignore tiny limb/hand fragments
-        if candidate_bgr_crop.shape[0] < 50 or candidate_bgr_crop.shape[1] < 20:
+        ch, cw = candidate_bgr_crop.shape[:2]
+        if ch < 50 or cw < 20:
             return False, 0.0
 
         try:
-            # Pre-enhance candidate if lighting is dark / cinema style
-            enhanced_cand = self._enhance_lighting_if_dark(candidate_bgr_crop)
+            # Cap oversized close-up crops to 320px tall so YuNet/MobileNet never crunch huge bitmaps
+            if ch > 320:
+                scale = 320.0 / ch
+                work_crop = cv2.resize(
+                    candidate_bgr_crop,
+                    (max(20, int(cw * scale)), 320),
+                    interpolation=cv2.INTER_LINEAR
+                )
+            else:
+                work_crop = candidate_bgr_crop
 
-            # 1. Candidate Face Biometrics
-            cand_face_feat, cand_face_box = self._detect_face_and_feature(enhanced_cand)
-            
-            # 2. Candidate Clothing Color
+            # Pre-enhance candidate if lighting is dark / cinema style
+            enhanced_cand = self._enhance_lighting_if_dark(work_crop)
+
+            # 1. Candidate Face Biometrics (skip double lighting enhance & skip Haar fallback in fast_mode)
+            cand_face_feat, cand_face_box = self._detect_face_and_feature(
+                enhanced_cand, pre_enhanced=True, fast_mode=fast_mode
+            )
+
+            # 2. Candidate Clothing Color (~0.3ms fast signature)
             cand_upper, cand_lower = self._extract_clothing_colors(enhanced_cand, face_box=cand_face_box)
 
-            # 3. Candidate Deep Features
-            cand_rgb = cv2.cvtColor(enhanced_cand, cv2.COLOR_BGR2RGB)
-            cand_deep = self._extract_deep_features(Image.fromarray(cand_rgb))
+            # 3. Lazy Deep Features cache (only computed if actually needed by matching branch)
+            cand_deep = None
+
+            def _get_deep_sim(profile):
+                nonlocal cand_deep
+                if cand_deep is None:
+                    cand_rgb = cv2.cvtColor(enhanced_cand, cv2.COLOR_BGR2RGB)
+                    cand_deep = self._extract_deep_features(Image.fromarray(cand_rgb))
+                raw_deep_sim = float(np.dot(profile.deep_emb, cand_deep))
+                if raw_deep_sim <= 0.88:
+                    return max(0.0, raw_deep_sim * 0.10)
+                return min(1.0, 0.10 + ((raw_deep_sim - 0.88) / 0.10) * 0.90)
 
             # Evaluate candidate against EVERY reference angle profile
             scores = []
@@ -341,13 +366,6 @@ class TargetMatcher:
                 else:
                     color_score = avg_color_sim
 
-                # Calibrated Deep Appearance Similarity (Distinguishes subtle clothing/geometry differences)
-                raw_deep_sim = float(np.dot(profile.deep_emb, cand_deep))
-                if raw_deep_sim <= 0.88:
-                    sim_deep = max(0.0, raw_deep_sim * 0.10)
-                else:
-                    sim_deep = min(1.0, 0.10 + ((raw_deep_sim - 0.88) / 0.10) * 0.90)
-
                 if profile.has_face and self.face_recognizer is not None and cand_face_feat is not None:
                     # Both faces visible: Biometric SFace comparison (Thread-safe)
                     with self._lock:
@@ -355,25 +373,29 @@ class TargetMatcher:
                             profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
                         )
                     if raw_face_cos < 0.363:
-                        # Confirmed DIFFERENT person -> capped <= 12% (MISMATCH)
+                        # Confirmed DIFFERENT person -> capped <= 12% (MISMATCH, skip MobileNet!)
                         score = max(0.0, (raw_face_cos / 0.363) * 0.12) if raw_face_cos > 0 else 0.02
                     else:
                         # Confirmed SAME person -> 72% to 98%
                         face_calibrated = 0.72 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.26
+                        sim_deep = _get_deep_sim(profile)
                         score = (0.75 * face_calibrated) + (0.15 * color_score) + (0.10 * sim_deep)
 
                 elif profile.has_face and cand_face_feat is None:
                     # Reference profile has face, but candidate has NO visible face (turned away / walking back)
-                    # To eliminate false alarms on random people walking by or limbs/hands:
-                    if color_score >= 0.62 and sim_deep >= 0.55 and min_color_sim >= 0.45:
-                        # Strong agreement on BOTH shirt AND pants plus deep appearance
-                        score = min(0.72, (0.55 * color_score) + (0.45 * sim_deep))
+                    if color_score >= 0.62 and min_color_sim >= 0.45:
+                        sim_deep = _get_deep_sim(profile)
+                        if sim_deep >= 0.55:
+                            score = min(0.72, (0.55 * color_score) + (0.45 * sim_deep))
+                        else:
+                            score = max(0.0, min(0.35, color_score * 0.50 + sim_deep * 0.50))
                     else:
-                        # Mismatched clothing or unverified body -> reject as different person
-                        score = max(0.0, min(0.35, color_score * 0.50 + sim_deep * 0.50))
+                        # Clearly mismatched clothing without visible face -> skip MobileNet!
+                        score = max(0.0, min(0.35, color_score * 0.50))
 
                 else:
                     # Reference profile itself has no face (e.g. explicitly uploaded Back/Walking profile)
+                    sim_deep = _get_deep_sim(profile)
                     score = (0.55 * color_score) + (0.45 * sim_deep)
 
                 scores.append(max(0.0, min(1.0, score)))

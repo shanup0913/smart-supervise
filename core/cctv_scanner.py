@@ -35,6 +35,7 @@ class CCTVScanner:
         import torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._lock = threading.RLock()
+        self._yolo_lock = threading.RLock()
 
         # Load lightweight YOLOv8 (nano model for fast CPU/GPU execution)
         self.model = YOLO(model_name)
@@ -218,42 +219,55 @@ class CCTVScanner:
             self.sightings_history.clear()
             return True
 
-    def process_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
+    def _get_target_yolo_classes(self):
+        """Returns YOLO class ID filter when only specific COCO classes are needed."""
+        names = getattr(self.model, "names", None)
+        if not isinstance(names, dict):
+            return None
+        if self.tracking_mode == "person_photo":
+            if names.get(0) == "person":
+                return [0]
+            ids = [cid for cid, cname in names.items() if cname == "person"]
+            return ids or None
+        if self.tracking_mode == "class_alert" and self.target_class_name:
+            ids = [cid for cid, cname in names.items() if cname == self.target_class_name]
+            return ids or None
+        return None
+
+    def analyze_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
         """
-        Analyzes a single video frame with YOLO + Biometric Matcher.
-        Returns annotated frame with bounding boxes, alert status, and burned-in timestamps.
+        Runs YOLO detection and target Re-ID / class matching on a frame without drawing.
+        Returns (detections, target_spotted_in_frame, best_match_info).
         """
         if frame is None:
-            return None, False
+            return [], False, None
 
-        annotated_frame = frame.copy()
         h, w = frame.shape[:2]
+        detections = []
         target_spotted_in_frame = False
         best_match_info = None
 
-        # Burn-in OSD Timestamp badge in top-right corner
-        now_clock = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        osd_text = f"⏱ [{video_time_str}]  {now_clock}" if video_time_str else f"REC ● {now_clock}"
-        osd_size = cv2.getTextSize(osd_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
-        osd_x1 = max(0, w - osd_size[0] - 16)
-        cv2.rectangle(annotated_frame, (osd_x1, 8), (w - 6, 28), (15, 15, 25), -1)
-        cv2.rectangle(annotated_frame, (osd_x1, 8), (w - 6, 28), (60, 60, 90), 1)
-        cv2.putText(annotated_frame, osd_text, (osd_x1 + 6, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 255) if video_time_str else (0, 255, 0), 1)
-
-        # Run YOLO detection with high precision (filters out limb hallucinations and noise)
         yolo_conf = 0.30 if fast_mode else 0.28
+        target_classes = self._get_target_yolo_classes()
+        yolo_kwargs = {
+            "verbose": False,
+            "conf": yolo_conf,
+            "device": self.device,
+        }
         if fast_mode:
-            results = self.model(frame, verbose=False, conf=yolo_conf, imgsz=320, device=self.device)[0]
-        else:
-            results = self.model(frame, verbose=False, conf=yolo_conf, device=self.device)[0]
-        
+            yolo_kwargs["imgsz"] = 320
+        if target_classes is not None:
+            yolo_kwargs["classes"] = target_classes
+
+        with self._yolo_lock:
+            results = self.model(frame, **yolo_kwargs)[0]
+
         for box in results.boxes:
             cls_id = int(box.cls[0].item())
             cls_name = self.model.names[cls_id]
             conf = float(box.conf[0].item())
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-            
+
             # Clip coordinates to frame boundary
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
@@ -267,44 +281,48 @@ class CCTVScanner:
                 aspect = bh / max(1, bw)
                 if aspect < 0.85 and conf < 0.60:
                     continue  # Horizontal limb, hand, or background artifact
-            
+
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
 
+            rel_bbox = (
+                x1 / max(1, w),
+                y1 / max(1, h),
+                x2 / max(1, w),
+                y2 / max(1, h),
+            )
+
             # Case A: Searching for a specific Person by Photo
             if self.tracking_mode == "person_photo" and cls_name == "person":
-                is_match, similarity = self.matcher.compare(crop)
-                
+                is_match, similarity = self.matcher.compare(crop, fast_mode=fast_mode)
+
                 if is_match:
                     target_spotted_in_frame = True
-                    # Bright Green Box for Found Target
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
                     time_badge = f" [{video_time_str}]" if video_time_str else ""
                     label = f"TARGET FOUND: {self.matcher.target_name} ({int(similarity*100)}%){time_badge}"
-                    
-                    # Label banner
-                    cv2.rectangle(annotated_frame, (x1, max(0, y1 - 28)), (x1 + len(label) * 10, y1), (0, 200, 0), -1)
-                    cv2.putText(annotated_frame, label, (x1 + 5, y1 - 8), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 2)
-                    
-                    best_match_info = {
-                        "confidence": similarity,
-                        "crop": crop,
-                        "bbox": (x1, y1, x2, y2),
-                        "target_name": self.matcher.target_name,
-                        "video_time": video_time_str
-                    }
+                    detections.append({
+                        "kind": "match",
+                        "rel_bbox": rel_bbox,
+                        "label": label,
+                        "score": similarity,
+                    })
+                    if best_match_info is None or similarity > best_match_info["confidence"]:
+                        best_match_info = {
+                            "confidence": similarity,
+                            "crop": crop,
+                            "bbox": (x1, y1, x2, y2),
+                            "target_name": self.matcher.target_name,
+                            "video_time": video_time_str
+                        }
                 else:
-                    # Clear Mismatch Indicator showing exact similarity score
                     match_pct = int(similarity * 100)
-                    label = f"MISMATCH ({match_pct}%)"
-                    box_color = (40, 50, 210)  # Distinct Red/Orange for mismatch
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, 2)
-                    text_w = len(label) * 9 + 8
-                    cv2.rectangle(annotated_frame, (x1, max(0, y1 - 22)), (x1 + text_w, y1), box_color, -1)
-                    cv2.putText(annotated_frame, label, (x1 + 4, y1 - 6), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                    detections.append({
+                        "kind": "mismatch",
+                        "rel_bbox": rel_bbox,
+                        "label": f"MISMATCH ({match_pct}%)",
+                        "score": similarity,
+                    })
 
             # Case B: Animal Intrusion / Specific Class Detection (e.g. Dog in school)
             elif self.tracking_mode == "class_alert" and cls_name == self.target_class_name:
@@ -312,22 +330,20 @@ class CCTVScanner:
                 # Calibrate YOLO confidence for human-friendly alert display (e.g. 85-98% for verified dogs)
                 display_conf = min(0.98, max(0.80, 0.72 + (conf - 0.30) * 0.45))
                 conf_pct = int(display_conf * 100)
-                
-                # Red Alert Box for Intrusion
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                label = f"ALERT: {cls_name.upper()} DETECTED! ({conf_pct}%)"
-                
-                cv2.rectangle(annotated_frame, (x1, max(0, y1 - 28)), (x1 + len(label) * 11, y1), (0, 0, 220), -1)
-                cv2.putText(annotated_frame, label, (x1 + 5, y1 - 8), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-                
-                best_match_info = {
-                    "confidence": display_conf,
-                    "crop": crop,
-                    "bbox": (x1, y1, x2, y2),
-                    "target_name": f"{cls_name.capitalize()} Intrusion",
-                    "video_time": video_time_str
-                }
+                detections.append({
+                    "kind": "class_alert",
+                    "rel_bbox": rel_bbox,
+                    "label": f"ALERT: {cls_name.upper()} DETECTED! ({conf_pct}%)",
+                    "score": display_conf,
+                })
+                if best_match_info is None or display_conf > best_match_info["confidence"]:
+                    best_match_info = {
+                        "confidence": display_conf,
+                        "crop": crop,
+                        "bbox": (x1, y1, x2, y2),
+                        "target_name": f"{cls_name.capitalize()} Intrusion",
+                        "video_time": video_time_str
+                    }
 
         # Update Last Known Location if target was spotted (Thread-Safe)
         snapshot_saved_path = ""
@@ -342,13 +358,13 @@ class CCTVScanner:
                 self.last_sighting["snapshot"] = best_match_info["crop"]
                 self.last_sighting["bbox"] = best_match_info["bbox"]
                 self.last_sighting["target_name"] = best_match_info["target_name"]
-                
+
                 # Save sighting snapshot with burned-in timestamp
                 if not self.sightings_history or (time.time() - self.sightings_history[-1].get("time_epoch", 0)) > 2.0:
                     stamp_clean = (video_time_str or "").replace(":", "-")
                     snapshot_filename = f"sighting_{int(time.time())}_{stamp_clean}.jpg"
                     snapshot_path = os.path.join(self.alerts_dir, snapshot_filename)
-                    
+
                     try:
                         # Burn timestamp into snapshot crop
                         snap_img = best_match_info["crop"].copy()
@@ -360,7 +376,7 @@ class CCTVScanner:
                         snapshot_saved_path = snapshot_path
                     except Exception:
                         pass
-                    
+
                     entry = {
                         "camera": camera_name,
                         "timestamp": now_str,
@@ -374,19 +390,86 @@ class CCTVScanner:
         if best_match_info:
             best_match_info["snapshot_path"] = snapshot_saved_path
 
-        # Overlay status bar at bottom of frame
-        self._draw_status_overlay(annotated_frame, target_spotted_in_frame, camera_name, video_time_str)
+        return detections, target_spotted_in_frame, best_match_info
+
+    def draw_overlays(self, frame, detections, spotted_now, camera_name="Camera 1", video_time_str=None):
+        """Renders OSD timestamp, cached detection bounding boxes, and bottom status banner."""
+        if frame is None:
+            return None
+
+        annotated_frame = frame.copy()
+        h, w = annotated_frame.shape[:2]
+
+        # Burn-in OSD Timestamp badge in top-right corner
+        now_clock = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        osd_text = f"⏱ [{video_time_str}]  {now_clock}" if video_time_str else f"REC ● {now_clock}"
+        osd_size = cv2.getTextSize(osd_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+        osd_x1 = max(0, w - osd_size[0] - 16)
+        cv2.rectangle(annotated_frame, (osd_x1, 8), (w - 6, 28), (15, 15, 25), -1)
+        cv2.rectangle(annotated_frame, (osd_x1, 8), (w - 6, 28), (60, 60, 90), 1)
+        cv2.putText(annotated_frame, osd_text, (osd_x1 + 6, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 255) if video_time_str else (0, 255, 0), 1)
+
+        box_styles = {
+            "match": ((0, 255, 0), 3, (0, 200, 0), (0, 0, 0), 28, 10, 0.52, 2),
+            "mismatch": ((40, 50, 210), 2, (40, 50, 210), (255, 255, 255), 22, 9, 0.45, 1),
+            "class_alert": ((0, 0, 255), 3, (0, 0, 220), (255, 255, 255), 28, 11, 0.55, 2),
+        }
+
+        for det in detections or ():
+            rx1, ry1, rx2, ry2 = det["rel_bbox"]
+            x1 = max(0, min(w, int(rx1 * w)))
+            y1 = max(0, min(h, int(ry1 * h)))
+            x2 = max(0, min(w, int(rx2 * w)))
+            y2 = max(0, min(h, int(ry2 * h)))
+            label = det["label"]
+            (box_color, box_thick, banner_color, text_color,
+             banner_h, char_w, font_scale, text_thick) = box_styles.get(det["kind"], box_styles["mismatch"])
+
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, box_thick)
+            text_w = len(label) * char_w + (8 if det["kind"] == "mismatch" else 0)
+            cv2.rectangle(annotated_frame, (x1, max(0, y1 - banner_h)), (x1 + text_w, y1), banner_color, -1)
+            text_y = y1 - 6 if det["kind"] == "mismatch" else y1 - 8
+            text_x = x1 + (4 if det["kind"] == "mismatch" else 5)
+            cv2.putText(annotated_frame, label, (text_x, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, text_thick)
+
+        self._draw_status_overlay(annotated_frame, spotted_now, camera_name, video_time_str)
+        return annotated_frame
+
+    def process_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
+        """
+        Analyzes a single video frame with YOLO + Biometric Matcher.
+        Returns annotated frame with bounding boxes, alert status, and burned-in timestamps.
+        """
+        if frame is None:
+            return None, False, None
+
+        detections, target_spotted_in_frame, best_match_info = self.analyze_frame(
+            frame,
+            camera_name=camera_name,
+            video_time_str=video_time_str,
+            fast_mode=fast_mode,
+        )
+        annotated_frame = self.draw_overlays(
+            frame,
+            detections,
+            target_spotted_in_frame,
+            camera_name=camera_name,
+            video_time_str=video_time_str,
+        )
         return annotated_frame, target_spotted_in_frame, best_match_info
 
     def _draw_status_overlay(self, frame, spotted_now, camera_name, video_time_str=None):
         """Draws a sleek status banner showing current camera, video timestamp & Last Known Location."""
         h, w = frame.shape[:2]
         banner_h = 40
-        
-        # Bottom banner background
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, h - banner_h), (w, h), (20, 20, 30), -1)
-        cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+        y0 = max(0, h - banner_h)
+
+        # Blend only the bottom banner ROI instead of copying the entire frame
+        roi = frame[y0:h, 0:w]
+        overlay = np.full_like(roi, (20, 20, 30))
+        cv2.addWeighted(overlay, 0.82, roi, 0.18, 0, roi)
         
         # Camera tag + Video Timestamp (Left)
         cam_tag = f"CAM: {camera_name}"

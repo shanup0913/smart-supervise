@@ -608,7 +608,8 @@ class CenterGrid(ctk.CTkFrame):
                         target_plbl_col = ACCENT_BLUE
 
                     # Dirty check for progress bar and label
-                    if abs(tile.get("_last_pbar_val", -1.0) - target_pct) > 0.005 or tile.get("_last_pbar_col") != target_pbar_col:
+                    last_pbar = tile.get("_last_pbar_val")
+                    if last_pbar is None or abs(last_pbar - target_pct) > 0.005 or tile.get("_last_pbar_col") != target_pbar_col:
                         tile["_last_pbar_val"] = target_pct
                         tile["_last_pbar_col"] = target_pbar_col
                         tile["pbar"].set(target_pct)
@@ -651,17 +652,7 @@ class CenterGrid(ctk.CTkFrame):
                         frame_seq = state.get("frame_seq", 0)
                         if frame_seq != tile.get("last_rendered_seq", -1):
                             tile["last_rendered_seq"] = frame_seq
-                            tw = max(10, tile["label"].winfo_width() or 310)
-                            th = max(10, tile["label"].winfo_height() or 210)
-                            fh, fw = frame.shape[:2]
-                            scale = min(tw / fw, th / fh)
-                            nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
-                            resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-                            frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-                            pimg = Image.fromarray(frame_rgb)
-                            cimg = ctk.CTkImage(pimg, size=(nw, nh))
-                            tile["label"].configure(image=cimg, text="")
-                            tile["label"].image = cimg
+                            self._render_frame_to_label(tile["label"], frame, 310, 210)
 
                 elif state and not state["enabled"]:
                     if not tile.get("_last_disabled", False):
@@ -701,7 +692,8 @@ class CenterGrid(ctk.CTkFrame):
                     target_col = ACCENT_BLUE
                     target_txt = f"CAM {idx+1} 🔴 LIVE STREAM"
 
-                if abs(getattr(self, "_last_single_pbar", -1.0) - target_pct) > 0.005 or getattr(self, "_last_single_col", None) != target_col:
+                last_spbar = getattr(self, "_last_single_pbar", None)
+                if last_spbar is None or abs(last_spbar - target_pct) > 0.005 or getattr(self, "_last_single_col", None) != target_col:
                     self._last_single_pbar = target_pct
                     self._last_single_col = target_col
                     self.single_pbar.set(target_pct)
@@ -730,17 +722,7 @@ class CenterGrid(ctk.CTkFrame):
                     if frame_seq != self.last_single_rendered_seq or idx != self.last_single_rendered_idx:
                         self.last_single_rendered_seq = frame_seq
                         self.last_single_rendered_idx = idx
-                        sw = max(10, self.single_label.winfo_width() or 640)
-                        sh = max(10, self.single_label.winfo_height() or 460)
-                        fh, fw = frame.shape[:2]
-                        scale = min(sw / fw, sh / fh)
-                        nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
-                        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-                        frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-                        pimg = Image.fromarray(frame_rgb)
-                        cimg = ctk.CTkImage(pimg, size=(nw, nh))
-                        self.single_label.configure(image=cimg, text="")
-                        self.single_label.image = cimg
+                        self._render_frame_to_label(self.single_label, frame, 640, 460)
 
         self.update_last_seen_banner()
 
@@ -780,6 +762,32 @@ class CenterGrid(ctk.CTkFrame):
             self.last_seen_banner.configure(fg_color=bg_col)
             self.last_seen_label.configure(text=loc_text, text_color=color)
 
+    def _render_frame_to_label(self, label, frame, default_w, default_h):
+        """Renders an OpenCV BGR frame into a CTkLabel without dangling PhotoImage references."""
+        tw = max(10, label.winfo_width() or default_w)
+        th = max(10, label.winfo_height() or default_h)
+        fh, fw = frame.shape[:2]
+        scale = min(tw / fw, th / fh)
+        nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
+        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        cimg = ctk.CTkImage(Image.fromarray(frame_rgb), size=(nw, nh))
+        label.configure(image=cimg)
+        label.image = cimg
+        if label.cget("text"):
+            label.configure(text="")
+
+    def _clear_label_image(self, label, text):
+        """Detaches any Tk PhotoImage from CTkLabel before dropping Python image refs."""
+        label.configure(image=None)
+        if hasattr(label, "_label"):
+            try:
+                label._label.configure(image="")
+            except Exception:
+                pass
+        label.image = None
+        label.configure(text=text)
+
     def _clear_tile_widgets(self, idx, tile, label_text=None, plabel_text="Standby"):
         tile["_last_disabled"] = True
         tile["_last_pbar_val"] = None
@@ -789,8 +797,7 @@ class CenterGrid(ctk.CTkFrame):
         tile["_last_border_col"] = None
         tile["header"].configure(text=f"CAM {idx+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
         tile["frame"].configure(border_color="#181828", border_width=1)
-        tile["label"].configure(image=None, text=label_text or f"Camera {idx+1}\n(Disabled in Settings)")
-        tile["label"].image = None
+        self._clear_label_image(tile["label"], label_text or f"Camera {idx+1}\n(Disabled in Settings)")
         tile["pbar"].set(0.0)
         tile["plabel"].configure(text=plabel_text, text_color=TEXT_DIM)
         tile["last_rendered_seq"] = -1
@@ -806,8 +813,7 @@ class CenterGrid(ctk.CTkFrame):
         self._last_single_col = None
         title = f"CAM {idx+1} — Disabled / Removed" if idx is not None else "Focused Camera"
         self.single_header.configure(text=title, fg_color=CARD_BG)
-        self.single_label.configure(image=None, text="No Feed Selected")
-        self.single_label.image = None
+        self._clear_label_image(self.single_label, "No Feed Selected")
         self.single_pbar.set(0.0)
         self.single_plabel.configure(text="Standby", text_color=TEXT_DIM)
         self.last_single_rendered_seq = -1
@@ -831,8 +837,7 @@ class CenterGrid(ctk.CTkFrame):
             tile["_last_border_col"] = None
             tile["header"].configure(text="Standby", fg_color=CARD_BG)
             tile["frame"].configure(border_color="#22223a")
-            tile["label"].configure(image=None, text="Camera Standby")
-            tile["label"].image = None
+            self._clear_label_image(tile["label"], "Camera Standby")
             tile["pbar"].set(0.0)
             tile["plabel"].configure(text="0.0%", text_color=TEXT_DIM)
             tile["last_rendered_seq"] = -1

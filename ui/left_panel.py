@@ -888,23 +888,29 @@ class LeftPanel(ctk.CTkScrollableFrame):
             self.app.tracker.set_target(f"{class_name.capitalize()} Intrusion Detection")
 
         # Show immediate feedback so GUI never freezes or shows "Not Responding"
+        chosen_speed = self.global_speed_var.get()
         self.start_btn.configure(text="⏳  OPENING FEEDS...", state="disabled")
         self.app.set_status("INITIALIZING CAMERA STREAMS...", color=ACCENT_AMBER)
         self.update_idletasks()
 
+        def _safe_ui(fn):
+            try:
+                self.app.after(0, fn)
+            except RuntimeError:
+                pass
+
         def _bg_start():
             try:
                 active_count = self.app.video_engine.start(
-                    global_speed=self.global_speed_var.get(),
+                    global_speed=chosen_speed,
                     on_finished_callback=self.app.on_scan_finished
                 )
                 def _success():
                     self.start_btn.configure(text="▶  START SCANNING", state="disabled")
                     self.pause_btn.configure(state="normal", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
                     self.stop_btn.configure(state="normal")
-                    speed = self.global_speed_var.get()
-                    self.app.set_status(f"SYNCHRONIZED SEARCH: {active_count} CAMERAS @ {speed}", color=ACCENT_GREEN)
-                self.app.after(0, _success)
+                    self.app.set_status(f"SYNCHRONIZED SEARCH: {active_count} CAMERAS @ {chosen_speed}", color=ACCENT_GREEN)
+                _safe_ui(_success)
             except Exception as e:
                 err_msg = str(e)
                 def _err():
@@ -913,7 +919,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
                     self.stop_btn.configure(state="disabled")
                     self.app.set_status("STREAM CONNECTION ERROR", color=ACCENT_RED)
                     messagebox.showerror("Start Error", err_msg)
-                self.app.after(0, _err)
+                _safe_ui(_err)
 
         threading.Thread(target=_bg_start, daemon=True).start()
 
@@ -981,8 +987,8 @@ class LeftPanel(ctk.CTkScrollableFrame):
                 cam["_last_badge"] = new_badge
                 cam["progress_badge"].configure(text=new_badge, text_color=new_color)
 
-            last_pct = cam.get("_last_pct", -1.0)
-            if abs(last_pct - new_pct) > 0.005:
+            last_pct = cam.get("_last_pct")
+            if last_pct is None or abs(last_pct - new_pct) > 0.005:
                 cam["_last_pct"] = new_pct
                 cam["progress_bar"].set(new_pct)
                 cam["progress_bar"].configure(progress_color=new_color)
@@ -991,7 +997,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
         """Resets all camera progress badges and bars."""
         for cam in self.cam_ui_slots:
             cam["_last_badge"] = None
-            cam["_last_pct"] = None
+            cam["_last_pct"] = -1.0
             if cam["enabled"].get():
                 cam["progress_badge"].configure(text="Ready", text_color=ACCENT_GREEN)
             else:

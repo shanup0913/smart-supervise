@@ -79,8 +79,14 @@ class _LiveStreamReader:
         except Exception:
             self.fps = 30.0
 
-        # Grab an initial frame before returning so invalid/blocked sources fail fast
-        ret, frame = cap.read()
+        # Grab an initial frame (with brief warmup retries for slow webcams/RTSP sensors)
+        ret, frame = False, None
+        deadline = time.time() + 1.2
+        while time.time() < deadline:
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                break
+            time.sleep(0.05)
         if not ret or frame is None:
             self.stop()
             return False
@@ -479,7 +485,7 @@ class VideoEngine:
 
     def _refresh_active_flags_locked(self):
         self.has_file_slots = any(
-            s["enabled"] and s["is_file"] and s.get("cap") is not None
+            s["enabled"] and s["is_file"] and s.get("cap") is not None and not s.get("ended", False)
             for s in self.slots
         )
         self.has_live_slots = any(
@@ -532,7 +538,8 @@ class VideoEngine:
                 duration_sec = total_frames / max(1.0, fps)
                 return norm_src, True, cap, None, fps, total_frames, duration_sec
         else:
-            is_live_stream = isinstance(src, int) or str(src).startswith("http://") or str(src).startswith("https://") or str(src).startswith("rtsp://")
+            src_lower = str(src).lower()
+            is_live_stream = isinstance(src, int) or src_lower.startswith("http://") or src_lower.startswith("https://") or src_lower.startswith("rtsp://")
             if is_live_stream:
                 reader = _LiveStreamReader(src)
                 if reader.open(timeout=4.5):
@@ -1187,7 +1194,7 @@ class VideoEngine:
 
                     active_slots = [
                         s for s in self.slots
-                        if s["enabled"] and s["is_file"] and s["cap"] is not None
+                        if s["enabled"] and s["is_file"] and s["cap"] is not None and not s.get("ended", False)
                     ]
                     if not active_slots or not self.is_running:
                         break
@@ -1213,13 +1220,22 @@ class VideoEngine:
                     self.global_clock_sec += step_seconds
 
                     # Check if all video files finished
-                    if all_ended and self.max_video_duration > 0 and self.is_running:
-                        self.is_running = False
-                        if on_finished_callback:
-                            try:
-                                on_finished_callback()
-                            except Exception:
-                                pass
+                    if all_ended and self.is_running:
+                        with self._lock:
+                            self._refresh_active_flags_locked()
+                            still_has_live = self.has_live_slots
+                            if still_has_live:
+                                self.start_clock_sec = self.global_clock_sec
+                                self.start_real_time = time.time()
+                        if still_has_live:
+                            break
+                        if self.max_video_duration > 0:
+                            self.is_running = False
+                            if on_finished_callback:
+                                try:
+                                    on_finished_callback()
+                                except Exception:
+                                    pass
                         break
 
                     step_counter += 1

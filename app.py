@@ -6,6 +6,7 @@ Modular architecture: UI panels in ui/, background video streaming in core/video
 import sys
 import os
 import gc
+import time
 import cv2
 import threading
 import customtkinter as ctk
@@ -132,6 +133,7 @@ class SmartSuperviseApp(ctk.CTk):
         """Throttled UI refresh loop: decouples rendering from video decoding for zero lag and no GDI leaks."""
         if getattr(self, "_is_closing", False):
             return
+        tick_start = time.perf_counter()
         live_active = bool(self.video_engine.is_running and getattr(self.video_engine, "has_live_slots", False))
         try:
             self.pulse_tick += 1
@@ -175,9 +177,12 @@ class SmartSuperviseApp(ctk.CTk):
             pass
         finally:
             if not getattr(self, "_is_closing", False):
-                tick_ms = 33 if live_active else 60
+                target_ms = 33 if live_active else 60
+                elapsed_ms = (time.perf_counter() - tick_start) * 1000.0
+                # Always leave >= 12ms breathing room so clicks, speed controls, and scrolling stay instant
+                delay_ms = max(12, int(target_ms - elapsed_ms))
                 try:
-                    self.after(tick_ms, self._render_loop)
+                    self.after(delay_ms, self._render_loop)
                 except Exception:
                     pass
 

@@ -665,13 +665,7 @@ class CenterGrid(ctk.CTkFrame):
 
                 elif state and not state["enabled"]:
                     if not tile.get("_last_disabled", False):
-                        tile["_last_disabled"] = True
-                        tile["header"].configure(text=f"CAM {i+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
-                        tile["frame"].configure(border_color="#181828", border_width=1)
-                        tile["label"].configure(image=None, text=f"Camera {i+1}\n(Disabled in Settings)")
-                        tile["pbar"].set(0.0)
-                        tile["plabel"].configure(text="Standby", text_color=TEXT_DIM)
-                        tile["last_rendered_seq"] = -1
+                        self._clear_tile_widgets(i, tile, label_text=f"Camera {i+1}\n(Disabled / Removed)", plabel_text="Standby")
 
         # ── Mode B: Interactive Full Radar Map ──
         elif current_display == "map":
@@ -685,7 +679,9 @@ class CenterGrid(ctk.CTkFrame):
                 idx = int(current_display.replace("cam", ""))
 
             state = video_engine.get_slot_state(idx)
-            if state:
+            if state and not state["enabled"]:
+                self._clear_single_view(idx)
+            elif state:
                 loc = state["location"]
                 pct = state.get("progress_pct", 0.0)
                 pstr = state.get("progress_str", "0.0%")
@@ -784,8 +780,49 @@ class CenterGrid(ctk.CTkFrame):
             self.last_seen_banner.configure(fg_color=bg_col)
             self.last_seen_label.configure(text=loc_text, text_color=color)
 
+    def _clear_tile_widgets(self, idx, tile, label_text=None, plabel_text="Standby"):
+        tile["_last_disabled"] = True
+        tile["_last_pbar_val"] = None
+        tile["_last_pbar_col"] = None
+        tile["_last_plbl_text"] = None
+        tile["_last_hdr_text"] = None
+        tile["_last_border_col"] = None
+        tile["header"].configure(text=f"CAM {idx+1} — Disabled", fg_color="#181828", text_color=TEXT_DIM)
+        tile["frame"].configure(border_color="#181828", border_width=1)
+        tile["label"].configure(image=None, text=label_text or f"Camera {idx+1}\n(Disabled in Settings)")
+        tile["label"].image = None
+        tile["pbar"].set(0.0)
+        tile["plabel"].configure(text=plabel_text, text_color=TEXT_DIM)
+        tile["last_rendered_seq"] = -1
+
+    def _clear_single_view(self, idx=None):
+        if getattr(self, "_last_single_cleared_idx", None) == idx and self.last_single_rendered_seq == -1:
+            return
+        self._last_single_cleared_idx = idx
+        self._last_single_hdr_txt = None
+        self._last_single_hdr_fg = None
+        self._last_single_txt = None
+        self._last_single_pbar = None
+        self._last_single_col = None
+        title = f"CAM {idx+1} — Disabled / Removed" if idx is not None else "Focused Camera"
+        self.single_header.configure(text=title, fg_color=CARD_BG)
+        self.single_label.configure(image=None, text="No Feed Selected")
+        self.single_label.image = None
+        self.single_pbar.set(0.0)
+        self.single_plabel.configure(text="Standby", text_color=TEXT_DIM)
+        self.last_single_rendered_seq = -1
+        self.last_single_rendered_idx = -1
+
+    def reset_slot_tile(self, idx):
+        """Resets a single camera tile cleanly when its video/source is removed."""
+        if 0 <= idx < len(self.tiles):
+            tile = self.tiles[idx]
+            self._clear_tile_widgets(idx, tile, label_text=f"Camera {idx+1}\n(Removed / No Source)", plabel_text="Removed")
+            if self.display_mode.get() == f"cam{idx}":
+                self._clear_single_view(idx)
+
     def reset_tiles(self):
-        for tile in self.tiles:
+        for i, tile in enumerate(self.tiles):
             tile["_last_disabled"] = None
             tile["_last_pbar_val"] = None
             tile["_last_pbar_col"] = None
@@ -795,8 +832,9 @@ class CenterGrid(ctk.CTkFrame):
             tile["header"].configure(text="Standby", fg_color=CARD_BG)
             tile["frame"].configure(border_color="#22223a")
             tile["label"].configure(image=None, text="Camera Standby")
+            tile["label"].image = None
+            tile["pbar"].set(0.0)
+            tile["plabel"].configure(text="0.0%", text_color=TEXT_DIM)
             tile["last_rendered_seq"] = -1
-        self.single_header.configure(text="Focused Camera", fg_color=CARD_BG)
-        self.single_label.configure(image=None, text="No Feed Selected")
-        self.last_single_rendered_seq = -1
-        self.last_single_rendered_idx = -1
+        self._last_single_cleared_idx = None
+        self._clear_single_view(None)

@@ -39,6 +39,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
             "Camera 3 (Room 204)",
             "Camera 4 (Cafeteria)"
         ]
+        self.default_locations = default_locations
         self.cam_ui_slots = []
         for i in range(4):
             self.cam_ui_slots.append({
@@ -235,6 +236,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
             chk = ctk.CTkCheckBox(
                 hdr, text=f"Camera {i+1}",
                 variable=cam["enabled"],
+                command=lambda idx=i: self._on_slot_enabled_toggled(idx),
                 font=ctk.CTkFont(size=11, weight="bold"),
                 fg_color=ACCENT_GREEN,
                 text_color=TEXT_LIGHT
@@ -262,7 +264,7 @@ class LeftPanel(ctk.CTkScrollableFrame):
             ctk.CTkButton(
                 src_row, text="📁 File",
                 command=lambda idx=i: self._browse_camera_video(idx),
-                width=52, height=24, fg_color=DARK_BG, hover_color=PANEL_BG,
+                width=46, height=24, fg_color=DARK_BG, hover_color=PANEL_BG,
                 border_width=1, border_color=ACCENT_BLUE,
                 font=ctk.CTkFont(size=9, weight="bold")
             ).pack(side="left", padx=(0, 2))
@@ -270,30 +272,44 @@ class LeftPanel(ctk.CTkScrollableFrame):
             ctk.CTkButton(
                 src_row, text="📱 Phone",
                 command=lambda idx=i: self._connect_phone_modal(idx),
-                width=62, height=24, fg_color="#142838", hover_color="#1c3c54",
+                width=54, height=24, fg_color="#142838", hover_color="#1c3c54",
                 text_color=ACCENT_BLUE,
                 border_width=1, border_color=ACCENT_BLUE,
                 font=ctk.CTkFont(size=9, weight="bold")
+            ).pack(side="left", padx=(0, 2))
+
+            ctk.CTkButton(
+                src_row, text="✕",
+                command=lambda idx=i: self._on_remove_slot_clicked(idx),
+                width=26, height=24, fg_color="#2a1414", hover_color="#501818",
+                text_color=ACCENT_RED,
+                border_width=1, border_color=ACCENT_RED,
+                font=ctk.CTkFont(size=10, weight="bold")
             ).pack(side="left")
 
-            ctk.CTkEntry(
+            loc_entry = ctk.CTkEntry(
                 cframe, textvariable=cam["location_var"],
                 placeholder_text="Room / Floor Location",
                 width=210, height=24, fg_color=DARK_BG, border_color=ACCENT_BLUE,
                 font=ctk.CTkFont(size=10)
-            ).pack(padx=8, pady=(1, 3))
+            )
+            loc_entry.pack(padx=8, pady=(1, 3))
+            loc_entry.bind("<FocusOut>", lambda _e, idx=i: self.app.video_engine.set_slot_location(idx, self.cam_ui_slots[idx]["location_var"].get()))
+            loc_entry.bind("<Return>", lambda _e, idx=i: self.app.video_engine.set_slot_location(idx, self.cam_ui_slots[idx]["location_var"].get()))
 
             spd_row = ctk.CTkFrame(cframe, fg_color="transparent")
             spd_row.pack(fill="x", padx=8, pady=(0, 3))
             ctk.CTkLabel(spd_row, text="Speed:", font=ctk.CTkFont(size=9, weight="bold"), text_color=TEXT_DIM).pack(side="left", padx=(0, 4))
-            ctk.CTkSegmentedButton(
+            cam["speed_selector"] = ctk.CTkSegmentedButton(
                 spd_row,
                 values=["1x", "5x", "10x", "20x", "40x"],
                 variable=cam["speed_var"],
+                command=lambda val, idx=i: self._on_slot_speed_change(idx, val),
                 selected_color=ACCENT_BLUE,
                 height=20,
                 font=ctk.CTkFont(size=9)
-            ).pack(side="left", fill="x", expand=True)
+            )
+            cam["speed_selector"].pack(side="left", fill="x", expand=True)
 
             cam_pbar = ctk.CTkProgressBar(
                 cframe, height=4, corner_radius=2,
@@ -353,12 +369,136 @@ class LeftPanel(ctk.CTkScrollableFrame):
             self.photo_frame.pack(fill="x", padx=4, pady=(0, 6))
 
     def _on_global_speed_change(self, value):
-        for cam in self.cam_ui_slots:
-            cam["speed_var"].set(value)
+        running_live = self.app.video_engine.is_running
+        for i, cam in enumerate(self.cam_ui_slots):
+            is_live = running_live and not self.app.video_engine.slots[i]["is_file"]
+            if not is_live:
+                cam["speed_var"].set(value)
         # Dynamically adjust speed mid-video while running!
         self.app.video_engine.set_global_speed(value)
         if self.app.video_engine.is_running and not self.app.video_engine.is_paused:
             self.app.set_status(f"Live Playback Speed set to {value}!", color=ACCENT_GREEN)
+
+    def _on_slot_speed_change(self, slot_idx, value):
+        changed, applied = self.app.video_engine.set_slot_speed(slot_idx, value)
+        cam = self.cam_ui_slots[slot_idx]
+        if not changed:
+            cam["speed_var"].set("1x")
+            self.app.set_status(
+                f"Camera {slot_idx+1} is a live stream (always runs at 1x real-time).",
+                color=ACCENT_AMBER,
+            )
+        elif self.app.video_engine.is_running:
+            self.app.set_status(f"Camera {slot_idx+1} speed changed to {applied}!", color=ACCENT_GREEN)
+
+    def _hot_swap_slot(self, slot_idx, source, location=None, speed=None):
+        """Applies a new file or live stream cleanly while scanning is already running."""
+        cam = self.cam_ui_slots[slot_idx]
+        if "progress_badge" in cam:
+            cam["_last_badge"] = "⏳"
+            cam["progress_badge"].configure(text="⏳", text_color=ACCENT_AMBER)
+        self.app.set_status(f"Loading Camera {slot_idx+1} feed...", color=ACCENT_AMBER)
+
+        def _bg_swap():
+            try:
+                self.app.video_engine.replace_slot(slot_idx, source, location=location, speed=speed)
+                def _ok():
+                    if getattr(self.app, "_is_closing", False):
+                        return
+                    is_file = self.app.video_engine.slots[slot_idx]["is_file"]
+                    if not is_file:
+                        cam["speed_var"].set("1x")
+                    cam["_last_badge"] = None
+                    if slot_idx < len(self.app.center_grid.tiles):
+                        self.app.center_grid.tiles[slot_idx]["_last_disabled"] = False
+                        self.app.center_grid.tiles[slot_idx]["last_rendered_seq"] = -1
+                    self.app.set_status(f"Camera {slot_idx+1} feed active!", color=ACCENT_GREEN)
+                self.app.after(0, _ok)
+            except Exception as e:
+                err_msg = str(e)
+                def _err():
+                    if getattr(self.app, "_is_closing", False):
+                        return
+                    cam["enabled"].set(False)
+                    cam["_last_badge"] = None
+                    if "progress_badge" in cam:
+                        cam["progress_badge"].configure(text="Error", text_color=ACCENT_RED)
+                    self.app.center_grid.reset_slot_tile(slot_idx)
+                    self.app.set_status(f"Camera {slot_idx+1} failed to load", color=ACCENT_RED)
+                    messagebox.showerror("Camera Error", err_msg)
+                self.app.after(0, _err)
+
+        threading.Thread(target=_bg_swap, daemon=True).start()
+
+    def _on_slot_enabled_toggled(self, slot_idx):
+        cam = self.cam_ui_slots[slot_idx]
+        want_on = cam["enabled"].get()
+        if not self.app.video_engine.is_running:
+            if "progress_badge" in cam:
+                cam["_last_badge"] = None
+                has_src = bool(cam["source_var"].get().strip()) or slot_idx == 0
+                cam["progress_badge"].configure(
+                    text=("Ready" if (want_on and has_src) else "OFF"),
+                    text_color=(ACCENT_GREEN if (want_on and has_src) else TEXT_DIM),
+                )
+            if not want_on:
+                self.app.center_grid.reset_slot_tile(slot_idx)
+            return
+
+        if want_on:
+            src = cam["source_var"].get().strip()
+            if not src and slot_idx != 0:
+                cam["enabled"].set(False)
+                messagebox.showinfo("No Source", f"Please choose a video file or phone camera for Camera {slot_idx+1} first.")
+                return
+            self._hot_swap_slot(slot_idx, src or "0", cam["location_var"].get(), cam["speed_var"].get())
+        else:
+            self.app.center_grid.reset_slot_tile(slot_idx)
+            def _bg_disable():
+                remaining = self.app.video_engine.remove_slot(slot_idx, clear_source=False)
+                def _done():
+                    if getattr(self.app, "_is_closing", False):
+                        return
+                    if remaining == 0:
+                        self._finish_stop_ui()
+                    else:
+                        self.app.set_status(f"Camera {slot_idx+1} paused/disabled ({remaining} active).", color=TEXT_DIM)
+                self.app.after(0, _done)
+            threading.Thread(target=_bg_disable, daemon=True).start()
+
+    def _on_remove_slot_clicked(self, slot_idx):
+        """Removes a camera's video/source cleanly so a different one can be added without restarting."""
+        cam = self.cam_ui_slots[slot_idx]
+        cam["enabled"].set(False)
+        cam["source_var"].set("")
+        cam["location_var"].set(self.default_locations[slot_idx])
+        cam["speed_var"].set(self.global_speed_var.get())
+        cam["_last_badge"] = None
+        cam["_last_pct"] = -1.0
+        if "progress_badge" in cam:
+            cam["progress_badge"].configure(text="OFF", text_color=TEXT_DIM)
+        if "progress_bar" in cam:
+            cam["progress_bar"].set(0.0)
+        self.app.center_grid.reset_slot_tile(slot_idx)
+
+        was_running = self.app.video_engine.is_running
+        if not was_running:
+            self.app.video_engine.remove_slot(slot_idx, clear_source=True)
+            self.app.set_status(f"Removed Camera {slot_idx+1} feed. Ready to add a new video.", color=TEXT_DIM)
+            return
+
+        def _bg_remove():
+            remaining = self.app.video_engine.remove_slot(slot_idx, clear_source=True)
+            def _done():
+                if getattr(self.app, "_is_closing", False):
+                    return
+                if remaining == 0:
+                    self._finish_stop_ui()
+                else:
+                    self.app.set_status(f"Removed Camera {slot_idx+1} ({remaining} camera(s) still scanning).", color=ACCENT_AMBER)
+            self.app.after(0, _done)
+
+        threading.Thread(target=_bg_remove, daemon=True).start()
 
     def _on_sensitivity_change(self, value):
         if "Strict" in value or "70" in value:
@@ -387,6 +527,11 @@ class LeftPanel(ctk.CTkScrollableFrame):
             curr_loc = cam["location_var"].get()
             if not curr_loc or curr_loc.startswith("Camera"):
                 cam["location_var"].set(f"Camera {slot_idx+1} ({clean_name})")
+            if self.app.video_engine.is_running:
+                self._hot_swap_slot(slot_idx, path, cam["location_var"].get(), cam["speed_var"].get())
+            elif "progress_badge" in cam:
+                cam["_last_badge"] = None
+                cam["progress_badge"].configure(text="Ready", text_color=ACCENT_GREEN)
 
     def _connect_phone_modal(self, slot_idx):
         """Interactive modal dialog to easily connect any Android or iPhone IP camera."""
@@ -539,8 +684,12 @@ class LeftPanel(ctk.CTkScrollableFrame):
             if "progress_badge" in cam:
                 cam["progress_badge"].configure(text="Ready (Phone)", text_color=ACCENT_GREEN)
 
-            self.app.set_status(f"Camera {slot_idx + 1} linked to Phone ({url})", color=ACCENT_GREEN)
-            modal.destroy()
+            if self.app.video_engine.is_running:
+                modal.destroy()
+                self._hot_swap_slot(slot_idx, url, loc, "1x")
+            else:
+                self.app.set_status(f"Camera {slot_idx + 1} linked to Phone ({url})", color=ACCENT_GREEN)
+                modal.destroy()
 
         btn_row = ctk.CTkFrame(modal, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=(0, 10))
@@ -779,21 +928,35 @@ class LeftPanel(ctk.CTkScrollableFrame):
             spd = self.global_speed_var.get()
             self.app.set_status(f"RESUMED — SCANNING @ {spd}", color=ACCENT_GREEN)
 
+    def _finish_stop_ui(self):
+        if getattr(self.app, "_is_closing", False):
+            return
+        self.start_btn.configure(text="▶  START SCANNING", state="normal")
+        self.pause_btn.configure(state="disabled", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
+        self.stop_btn.configure(text="■  STOP", state="disabled")
+        self.app.set_status("IDLE", color=TEXT_DIM)
+        self.app.active_feeds_label.configure(text="📹  FEEDS: Standby")
+        self.app.center_grid.reset_tiles()
+        self.reset_camera_progress()
+
     def _on_stop_clicked(self):
         self.stop_btn.configure(text="⏳ STOPPING...", state="disabled")
         self.pause_btn.configure(state="disabled", text="⏸  PAUSE", fg_color=DARK_BG, text_color=ACCENT_AMBER)
-        self.update_idletasks()
-        self.app.video_engine.stop()
-        self.start_btn.configure(text="▶  START SCANNING", state="normal")
-        self.stop_btn.configure(text="■  STOP", state="disabled")
-        self.app.set_status("IDLE", color=TEXT_DIM)
-        self.app.center_grid.reset_tiles()
-        self.reset_camera_progress()
+        self.app.set_status("STOPPING FEEDS...", color=ACCENT_AMBER)
+
+        def _bg_stop():
+            self.app.video_engine.stop()
+            try:
+                self.app.after(0, self._finish_stop_ui)
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg_stop, daemon=True).start()
 
     def update_camera_progress(self, video_engine):
         """Updates individual per-camera progress badges and progress bars with zero-overhead dirty checking."""
         for i, cam in enumerate(self.cam_ui_slots):
-            state = video_engine.get_slot_state(i)
+            state = video_engine.get_slot_state(i, include_frame=False)
             if not state or not state["enabled"]:
                 new_badge = "OFF"
                 new_color = TEXT_DIM

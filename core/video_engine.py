@@ -366,6 +366,15 @@ class VideoEngine:
             return f"http://{ip}:{port}/{path}"
         return src
 
+    @staticmethod
+    def is_live_source(raw_src: str) -> bool:
+        """Returns True if source text refers to a webcam index or HTTP/RTSP live camera."""
+        norm = VideoEngine.normalize_stream_source(raw_src)
+        if not norm or norm == "0" or norm.isdigit():
+            return True
+        lower = norm.lower()
+        return lower.startswith("http://") or lower.startswith("https://") or lower.startswith("rtsp://")
+
     def __init__(self, scanner, tracker):
         self.scanner = scanner
         self.tracker = tracker
@@ -377,6 +386,7 @@ class VideoEngine:
         self.live_ai_thread = None
         self.has_live_slots = False
         self.has_file_slots = False
+        self._on_finished_callback = None
         self._lock = threading.RLock()
 
         # Telemetry State
@@ -416,6 +426,7 @@ class VideoEngine:
                 "speed": "10x",
                 "cap": None,
                 "reader": None,
+                "op_lock": threading.RLock(),
                 "fps": 30.0,
                 "current_frame": None,
                 "frame_seq": 0,
@@ -432,6 +443,121 @@ class VideoEngine:
                 "ended": False,
                 "last_gray_thumb": None
             })
+
+    @staticmethod
+    def _close_slot_media(slot):
+        """Safely closes a single slot's capture/reader under its per-slot lock."""
+        with slot["op_lock"]:
+            reader = slot.get("reader")
+            if reader is not None:
+                try:
+                    reader.stop()
+                except Exception:
+                    pass
+                slot["reader"] = None
+            cap = slot.get("cap")
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                slot["cap"] = None
+
+    @staticmethod
+    def _reset_slot_runtime_fields(slot):
+        slot["spotted"] = False
+        slot["ended"] = False
+        slot["last_gray_thumb"] = None
+        slot["current_frame_pos"] = 0
+        slot["current_frame"] = None
+        slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+        slot["last_display_seq"] = -1
+        slot["last_ai_seq"] = -1
+        slot["last_ai_time"] = 0.0
+        slot["cached_detections"] = []
+        slot["cached_spotted"] = False
+
+    def _refresh_active_flags_locked(self):
+        self.has_file_slots = any(
+            s["enabled"] and s["is_file"] and s.get("cap") is not None
+            for s in self.slots
+        )
+        self.has_live_slots = any(
+            s["enabled"] and not s["is_file"] and s.get("reader") is not None
+            for s in self.slots
+        )
+        self.max_video_duration = max(
+            (s["duration_sec"] for s in self.slots if s["enabled"] and s["is_file"]),
+            default=0.0,
+        )
+
+    def _ensure_loops_running(self):
+        if not self.is_running:
+            return
+        if self.has_live_slots and (self.live_ai_thread is None or not self.live_ai_thread.is_alive()):
+            self.live_ai_thread = threading.Thread(
+                target=self._live_ai_loop,
+                daemon=True,
+            )
+            self.live_ai_thread.start()
+        if self.has_file_slots and (self.worker_thread is None or not self.worker_thread.is_alive()):
+            self.worker_thread = threading.Thread(
+                target=self._parallel_scan_loop,
+                args=(self._on_finished_callback,),
+                daemon=True,
+            )
+            self.worker_thread.start()
+
+    def _open_source_for_slot(self, idx, raw_src):
+        """Parses and opens a file, webcam, or live URL for a slot, raising ConnectionError on failure."""
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;3000000|rtsp_transport;tcp"
+        norm_src = self.normalize_stream_source(raw_src)
+
+        if norm_src == "" or norm_src == "0":
+            src = 0
+            is_file = False
+        else:
+            try:
+                src = int(norm_src)
+                is_file = False
+            except ValueError:
+                src = norm_src
+                is_file = os.path.isfile(norm_src)
+
+        if is_file:
+            cap = cv2.VideoCapture(src)
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                duration_sec = total_frames / max(1.0, fps)
+                return norm_src, True, cap, None, fps, total_frames, duration_sec
+        else:
+            is_live_stream = isinstance(src, int) or str(src).startswith("http://") or str(src).startswith("https://") or str(src).startswith("rtsp://")
+            if is_live_stream:
+                reader = _LiveStreamReader(src)
+                if reader.open(timeout=4.5):
+                    return norm_src, False, None, reader, reader.fps, 0, 0.0
+                reader.stop()
+
+        if isinstance(src, int):
+            hint = (
+                f"Could not open Webcam (index {src}) on Camera {idx+1}.\n\n"
+                "Quick Fixes:\n"
+                "• Close any app using your camera (Zoom, Teams, Meet, or Windows Camera app).\n"
+                "• Check Windows Settings → Privacy & Security → Camera (Allow apps access).\n"
+                "• If you have an external or IR camera, try index '1'."
+            )
+        elif str(src).startswith("http://") or str(src).startswith("https://") or str(src).startswith("rtsp://"):
+            hint = (
+                f"Could not connect to Phone / IP Camera {idx+1}:\n{raw_src}\n\n"
+                "Quick Fixes:\n"
+                "1. Make sure you tapped 'Start server' inside the phone app.\n"
+                "2. Ensure laptop & phone are on the SAME Wi-Fi (or turn on Phone Hotspot).\n"
+                f"3. Test in Chrome: Open '{raw_src}' in your browser to verify it connects."
+            )
+        else:
+            hint = f"Could not read video file for Camera {idx+1}:\n{raw_src}\nPlease verify the file exists."
+        raise ConnectionError(hint)
 
     def configure_slot(self, idx, enabled=None, source=None, location=None, speed=None):
         """Updates slot configuration parameters."""
@@ -452,123 +578,51 @@ class VideoEngine:
             self.stop()
 
         active_count = 0
-        file_count = 0
-        live_count = 0
         self.max_video_duration = 0.0
-
-        # Set network capture options for wireless phone cameras & RTSP (3s timeout)
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;3000000|rtsp_transport;tcp"
+        self._on_finished_callback = on_finished_callback
 
         for i, slot in enumerate(self.slots):
-            slot["spotted"] = False
-            slot["ended"] = False
-            slot["last_gray_thumb"] = None
-            slot["current_frame_pos"] = 0
-            slot["current_frame"] = None
+            self._reset_slot_runtime_fields(slot)
             slot["frame_seq"] = 0
-            slot["last_display_seq"] = -1
-            slot["last_ai_seq"] = -1
-            slot["last_ai_time"] = 0.0
-            slot["cached_detections"] = []
-            slot["cached_spotted"] = False
             slot["reader"] = None
             slot["cap"] = None
 
             if slot["enabled"]:
-                raw_src = slot["source"]
-                norm_src = self.normalize_stream_source(raw_src)
-                slot["source"] = norm_src
+                try:
+                    norm_src, is_file, cap, reader, fps, total_frames, duration_sec = self._open_source_for_slot(i, slot["source"])
+                except ConnectionError:
+                    self.stop()
+                    raise
 
-                if norm_src == "" or norm_src == "0":
-                    src = 0
-                    slot["is_file"] = False
-                else:
-                    try:
-                        src = int(norm_src)
-                        slot["is_file"] = False
-                    except ValueError:
-                        src = norm_src
-                        slot["is_file"] = os.path.isfile(norm_src)
+                slot["source"] = norm_src
+                slot["is_file"] = is_file
+                slot["cap"] = cap
+                slot["reader"] = reader
+                slot["fps"] = fps
+                slot["total_frames"] = total_frames
+                slot["duration_sec"] = duration_sec
 
                 # For live streams (phone / webcam / IP stream), lock playback speed to 1x
-                if not slot["is_file"] and slot["speed"] in ["5x", "10x", "20x", "40x"]:
+                if not is_file and slot["speed"] in ["5x", "10x", "20x", "40x"]:
                     slot["speed"] = "1x"
 
-                if slot["is_file"]:
-                    cap = cv2.VideoCapture(src)
-                    if cap.isOpened():
-                        slot["cap"] = cap
-                        slot["fps"] = cap.get(cv2.CAP_PROP_FPS) or 30.0
-                        slot["total_frames"] = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        slot["duration_sec"] = slot["total_frames"] / max(1.0, slot["fps"])
-                        if slot["duration_sec"] > self.max_video_duration:
-                            self.max_video_duration = slot["duration_sec"]
-                        file_count += 1
-                        active_count += 1
-                        continue
-                else:
-                    is_live_stream = isinstance(src, int) or str(src).startswith("http://") or str(src).startswith("https://") or str(src).startswith("rtsp://")
-                    if is_live_stream:
-                        reader = _LiveStreamReader(src)
-                        if reader.open(timeout=4.5):
-                            slot["reader"] = reader
-                            slot["fps"] = reader.fps
-                            slot["total_frames"] = 0
-                            slot["duration_sec"] = 0.0
-                            live_count += 1
-                            active_count += 1
-                            continue
-                        reader.stop()
-
-                self.stop()
-                if isinstance(src, int):
-                    hint = (
-                        f"Could not open Webcam (index {src}) on Camera {i+1}.\n\n"
-                        "Quick Fixes:\n"
-                        "• Close any app using your camera (Zoom, Teams, Meet, or Windows Camera app).\n"
-                        "• Check Windows Settings → Privacy & Security → Camera (Allow apps access).\n"
-                        "• If you have an external or IR camera, try index '1'."
-                    )
-                elif str(src).startswith("http://") or str(src).startswith("https://") or str(src).startswith("rtsp://"):
-                    hint = (
-                        f"Could not connect to Phone / IP Camera {i+1}:\n{raw_src}\n\n"
-                        "Quick Fixes:\n"
-                        "1. Make sure you tapped 'Start server' inside the phone app.\n"
-                        "2. Ensure laptop & phone are on the SAME Wi-Fi (or turn on Phone Hotspot).\n"
-                        f"3. Test in Chrome: Open '{raw_src}' in your browser to verify it connects."
-                    )
-                else:
-                    hint = f"Could not read video file for Camera {i+1}:\n{raw_src}\nPlease verify the file exists."
-                raise ConnectionError(hint)
+                active_count += 1
 
         if active_count == 0:
             raise ValueError("Please enable at least one Camera slot!")
 
-        self.has_file_slots = file_count > 0
-        self.has_live_slots = live_count > 0
-        self.is_running = True
-        self.is_paused = False
-        self.current_speed = str(global_speed).strip()
-        self.global_clock_sec = 0.0
-        self.start_clock_sec = 0.0
-        self.start_real_time = time.time()
-        self.actual_speed_multiplier = 1.0
-        self.current_steps_per_sec = 0.0
+        with self._lock:
+            self._refresh_active_flags_locked()
+            self.is_running = True
+            self.is_paused = False
+            self.current_speed = str(global_speed).strip()
+            self.global_clock_sec = 0.0
+            self.start_clock_sec = 0.0
+            self.start_real_time = time.time()
+            self.actual_speed_multiplier = 1.0
+            self.current_steps_per_sec = 0.0
 
-        if self.has_live_slots:
-            self.live_ai_thread = threading.Thread(
-                target=self._live_ai_loop,
-                daemon=True
-            )
-            self.live_ai_thread.start()
-
-        if self.has_file_slots:
-            self.worker_thread = threading.Thread(
-                target=self._parallel_scan_loop,
-                args=(on_finished_callback,),
-                daemon=True
-            )
-            self.worker_thread.start()
+        self._ensure_loops_running()
         return active_count
 
     def _sync_live_clock_locked(self):
@@ -606,8 +660,107 @@ class VideoEngine:
             self.start_real_time = time.time()
             self.start_clock_sec = self.global_clock_sec
             for slot in self.slots:
-                if slot["is_file"]:
-                    slot["speed"] = self.current_speed
+                if slot["is_file"] or not self.is_running:
+                    if not (self.is_running and not slot["is_file"]):
+                        slot["speed"] = self.current_speed
+
+    def set_slot_speed(self, idx, new_speed):
+        """Dynamically adjusts one camera's speed; live streams stay locked at 1x."""
+        if not (0 <= idx < len(self.slots)):
+            return False, "1x"
+        spd = str(new_speed).strip()
+        with self._lock:
+            slot = self.slots[idx]
+            is_live = (not slot["is_file"]) if self.is_running else self.is_live_source(slot["source"])
+            if is_live and spd != "1x":
+                slot["speed"] = "1x"
+                return False, "1x"
+            slot["speed"] = spd
+            return True, spd
+
+    def set_slot_location(self, idx, location):
+        """Updates a camera slot's display/tracker location name live."""
+        if 0 <= idx < len(self.slots):
+            with self._lock:
+                self.slots[idx]["location"] = str(location).strip()
+
+    def remove_slot(self, idx, clear_source=True):
+        """
+        Safely disables/removes a single camera slot (even mid-scan) without stopping other cameras.
+        Returns count of remaining enabled cameras; stops engine automatically if 0 remain.
+        """
+        if not (0 <= idx < len(self.slots)):
+            return 0
+        slot = self.slots[idx]
+        with self._lock:
+            slot["enabled"] = False
+            if clear_source:
+                slot["source"] = ""
+                slot["is_file"] = False
+            slot["total_frames"] = 0
+            slot["duration_sec"] = 0.0
+            self._reset_slot_runtime_fields(slot)
+
+        self._close_slot_media(slot)
+
+        with self._lock:
+            self._refresh_active_flags_locked()
+            remaining = sum(
+                1 for s in self.slots
+                if s["enabled"] and (not self.is_running or s.get("cap") is not None or s.get("reader") is not None)
+            )
+            running_now = self.is_running
+
+        if running_now and remaining == 0:
+            self.stop()
+        return remaining
+
+    def replace_slot(self, idx, source, location=None, speed=None):
+        """Hot-swaps or enables a single camera slot with a new video file or stream mid-run."""
+        if not (0 <= idx < len(self.slots)):
+            return False
+        slot = self.slots[idx]
+        raw_src = str(source).strip()
+
+        if not self.is_running:
+            self.configure_slot(idx, enabled=True, source=raw_src, location=location, speed=speed)
+            with self._lock:
+                self._reset_slot_runtime_fields(slot)
+            return True
+
+        # Disable slot briefly during close -> reopen so worker loops skip it cleanly
+        with self._lock:
+            slot["enabled"] = False
+            self._reset_slot_runtime_fields(slot)
+            self._refresh_active_flags_locked()
+
+        self._close_slot_media(slot)
+
+        try:
+            norm_src, is_file, cap, reader, fps, total_frames, duration_sec = self._open_source_for_slot(idx, raw_src)
+        except ConnectionError:
+            with self._lock:
+                self._refresh_active_flags_locked()
+            raise
+
+        with self._lock:
+            slot["source"] = norm_src
+            if location is not None:
+                slot["location"] = str(location).strip()
+            chosen_speed = str(speed).strip() if speed is not None else slot["speed"]
+            slot["speed"] = "1x" if not is_file else (chosen_speed or self.current_speed)
+            slot["is_file"] = is_file
+            slot["cap"] = cap
+            slot["reader"] = reader
+            slot["fps"] = fps
+            slot["total_frames"] = total_frames
+            slot["duration_sec"] = duration_sec
+            self._reset_slot_runtime_fields(slot)
+            slot["enabled"] = True
+            self._refresh_active_flags_locked()
+
+        self._ensure_loops_running()
+        return True
 
     def stop(self):
         """Halts the worker threads safely and releases camera resources without race conditions."""
@@ -630,27 +783,15 @@ class VideoEngine:
                 pass
             self.live_ai_thread = None
 
-        with self._lock:
-            for slot in self.slots:
-                reader = slot.get("reader")
-                if reader is not None:
-                    try:
-                        reader.stop()
-                    except Exception:
-                        pass
-                    slot["reader"] = None
-                if slot["cap"] is not None:
-                    try:
-                        slot["cap"].release()
-                    except Exception:
-                        pass
-                    slot["cap"] = None
+        for slot in self.slots:
+            self._close_slot_media(slot)
+            with self._lock:
                 slot["spotted"] = False
                 slot["cached_spotted"] = False
                 slot["cached_detections"] = []
                 slot["current_frame"] = None
 
-    def get_slot_state(self, idx):
+    def get_slot_state(self, idx, include_frame=True):
         """Returns thread-safe snapshot of slot state for GUI rendering with per-camera progress."""
         if not (0 <= idx < len(self.slots)):
             return None
@@ -659,7 +800,7 @@ class VideoEngine:
         reader = slot.get("reader")
 
         # Decoupled live rendering: overlay latest AI boxes onto every fresh raw camera frame (~30 FPS)
-        if slot["enabled"] and not slot["is_file"] and reader is not None and self.is_running and not self.is_paused:
+        if include_frame and slot["enabled"] and not slot["is_file"] and reader is not None and self.is_running and not self.is_paused:
             raw_frame, raw_seq, _ = reader.get_latest()
             need_draw = False
             with self._lock:
@@ -680,10 +821,11 @@ class VideoEngine:
                     video_time_str=cam_time_str,
                 )
                 with self._lock:
-                    slot["current_frame"] = annotated
-                    slot["last_display_seq"] = raw_seq
-                    slot["frame_seq"] = raw_seq
-                    slot["spotted"] = cached_spotted
+                    if slot["enabled"]:
+                        slot["current_frame"] = annotated
+                        slot["last_display_seq"] = raw_seq
+                        slot["frame_seq"] = raw_seq
+                        slot["spotted"] = cached_spotted
 
         with self._lock:
             is_file = slot["is_file"]
@@ -714,8 +856,12 @@ class VideoEngine:
                 pct = 0.0
                 progress_str = "0.0%"
 
-            # Return isolated copy of frame so GUI thread can resize safely
-            frame_copy = slot["current_frame"].copy() if slot["current_frame"] is not None else None
+            # Only copy image buffer when caller actually needs the video frame
+            frame_copy = (
+                slot["current_frame"].copy()
+                if (include_frame and slot["current_frame"] is not None)
+                else None
+            )
 
             return {
                 "enabled": slot["enabled"],
@@ -807,37 +953,42 @@ class VideoEngine:
     def _process_camera_slot(self, slot, global_speed, global_time_str, cur_sec):
         """Processes a single camera stream (Runs inside parallel ThreadPool worker)."""
         try:
-            cap = slot["cap"]
-            if cap is None or not cap.isOpened() or not slot["enabled"] or not self.is_running:
-                return None
+            with slot["op_lock"]:
+                cap = slot["cap"]
+                if cap is None or not cap.isOpened() or not slot["enabled"] or not self.is_running:
+                    return None
 
-            # Camera-specific playback speed
-            cam_spd = slot["speed"] or global_speed
-            cam_step_frames, _ = self.speed_map.get(cam_spd, (105, 0.002))
-            is_fast = cam_spd in ["5x", "10x", "20x", "40x"]
+                # Camera-specific playback speed
+                cam_spd = slot["speed"] or global_speed
+                cam_step_frames, _ = self.speed_map.get(cam_spd, (105, 0.002))
+                is_fast = cam_spd in ["5x", "10x", "20x", "40x"]
 
-            if slot["is_file"]:
-                slot["current_frame_pos"] += cam_step_frames
-                if slot["total_frames"] > 0 and slot["current_frame_pos"] >= slot["total_frames"]:
-                    slot["ended"] = True
-                    return {"id": slot["id"], "ended": True}
+                if slot["is_file"]:
+                    slot["current_frame_pos"] += cam_step_frames
+                    if slot["total_frames"] > 0 and slot["current_frame_pos"] >= slot["total_frames"]:
+                        slot["ended"] = True
+                        return {"id": slot["id"], "ended": True}
+                    else:
+                        try:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, slot["current_frame_pos"])
+                        except Exception:
+                            pass
+
+                    cam_sec = int(slot["current_frame_pos"] / max(1.0, slot["fps"]))
+                    ch = cam_sec // 3600
+                    cm_ = (cam_sec % 3600) // 60
+                    cs = cam_sec % 60
+                    cam_time_str = f"{ch:02d}:{cm_:02d}:{cs:02d}"
                 else:
-                    try:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, slot["current_frame_pos"])
-                    except Exception:
-                        pass
+                    cam_time_str = global_time_str
 
-                cam_sec = int(slot["current_frame_pos"] / max(1.0, slot["fps"]))
-                ch = cam_sec // 3600
-                cm_ = (cam_sec % 3600) // 60
-                cs = cam_sec % 60
-                cam_time_str = f"{ch:02d}:{cm_:02d}:{cs:02d}"
-            else:
-                cam_time_str = global_time_str
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    return {"id": slot["id"], "ended": slot["is_file"]}
 
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                return {"id": slot["id"], "ended": slot["is_file"]}
+            # Bail early if this slot was removed while reading
+            if not slot["enabled"] or not self.is_running:
+                return None
 
             loc_name = slot["location"].strip() or f"Camera {slot['id']+1}"
 
@@ -969,6 +1120,8 @@ class VideoEngine:
                     )
 
                     with self._lock:
+                        if not slot["enabled"]:
+                            continue
                         slot["cached_detections"] = detections
                         slot["cached_spotted"] = spotted
                         slot["spotted"] = spotted
@@ -976,6 +1129,9 @@ class VideoEngine:
                         # Trigger immediate redraw if display already drew this raw_seq before AI finished
                         if slot["last_display_seq"] == raw_seq:
                             slot["last_display_seq"] = -1
+
+                    # Yield briefly after AI inference so Tkinter UI stays snappy on CPU
+                    time.sleep(0.005)
 
                     live_sweeps += 1
 
@@ -1073,8 +1229,9 @@ class VideoEngine:
                         step_counter = 0
                         timer = time.time()
 
-                    if sleep_time > 0 and self.is_running:
-                        time.sleep(sleep_time)
+                    if self.is_running:
+                        # Small cooperative yield prevents 4 CPU-heavy threads from starving GUI events
+                        time.sleep(max(0.012, sleep_time))
                 except Exception:
                     if not self.is_running:
                         break

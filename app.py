@@ -115,7 +115,7 @@ class SmartSuperviseApp(ctk.CTk):
         main = ctk.CTkFrame(self, fg_color=DARK_BG)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        main.grid_columnconfigure(0, weight=0, minsize=325)  # Left panel (comfortable width)
+        main.grid_columnconfigure(0, weight=0, minsize=360)  # Left panel (roomy, zero-overlap width)
         main.grid_columnconfigure(1, weight=1)               # Center video grid
         main.grid_columnconfigure(2, weight=0, minsize=320)  # Right panel
         main.grid_rowconfigure(0, weight=1)

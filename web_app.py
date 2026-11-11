@@ -7,8 +7,10 @@ Deploys seamlessly on Hugging Face Spaces (Docker port 7860), local Wi-Fi, or an
 import os
 import sys
 import cv2
+import json
 import time
 import uuid
+import string
 import socket
 import base64
 import asyncio
@@ -24,8 +26,9 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
 from starlette.requests import Request
+from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.responses import (
     JSONResponse,
     HTMLResponse,
@@ -73,6 +76,150 @@ _STANDBY_JPEG = _make_placeholder_jpeg("SMART SUPERVISE", "Feed in standby — c
 _DISABLED_JPEG = _make_placeholder_jpeg("CAMERA OFF", "Enable or upload video to monitor this feed", (90, 95, 130))
 
 
+class _BrowserFrameCapture:
+    """
+    OpenCV VideoCapture-compatible capture backed by on-demand browser <video> decoding.
+    Avoids uploading multi-GB video files upfront: the browser keeps the file local and
+    streams only the lightweight ~480p JPEG frames needed at 1x-40x scan speeds.
+    """
+
+    def __init__(self, slot_id: int, filename: str, duration_sec: float, fps: float = 15.0, on_demand=None):
+        self.slot_id = int(slot_id)
+        self.filename = str(filename or f"camera_{slot_id + 1}.mp4")
+        self.duration_sec = max(0.5, float(duration_sec))
+        self.fps = max(5.0, min(30.0, float(fps)))
+        self.total_frames = max(1, int(round(self.duration_sec * self.fps)))
+        self._on_demand = on_demand
+
+        self._cond = threading.Condition()
+        self._opened = True
+        self._released = False
+        self._eof = False
+
+        self.cursor_pos = 0
+        self.demand_seq = 0
+        self.demand_sec = 0.0
+        self._delivered_seq = -1
+        self._delivered_frame = None
+
+    def isOpened(self):
+        return bool(self._opened and not self._released)
+
+    def get(self, prop_id):
+        if prop_id == cv2.CAP_PROP_FPS:
+            return self.fps
+        if prop_id == cv2.CAP_PROP_FRAME_COUNT:
+            return float(self.total_frames)
+        if prop_id == cv2.CAP_PROP_POS_FRAMES:
+            return float(self.cursor_pos)
+        if prop_id == cv2.CAP_PROP_POS_MSEC:
+            return float((self.cursor_pos / max(1.0, self.fps)) * 1000.0)
+        return 0.0
+
+    def set(self, prop_id, value):
+        if prop_id != cv2.CAP_PROP_POS_FRAMES:
+            return False
+        notify_args = None
+        with self._cond:
+            if self._released or not self._opened:
+                return False
+            target = max(0, int(round(value)))
+            self.cursor_pos = target
+            if target >= self.total_frames:
+                self._eof = True
+                self._cond.notify_all()
+                return True
+            self._eof = False
+            self.demand_sec = min(max(0.0, self.duration_sec - 0.02), target / max(1.0, self.fps))
+            self.demand_seq += 1
+            notify_args = (self.slot_id, self.demand_seq, self.demand_sec, self.fps)
+            self._cond.notify_all()
+        if notify_args and self._on_demand:
+            self._on_demand(*notify_args)
+        return True
+
+    def grab(self):
+        with self._cond:
+            if self._released or not self._opened or self._eof:
+                return False
+            self.cursor_pos += 1
+            if self.cursor_pos >= self.total_frames:
+                self._eof = True
+                self._cond.notify_all()
+                return False
+            return True
+
+    def read(self):
+        notify_args = None
+        with self._cond:
+            if self._released or not self._opened or self._eof or self.cursor_pos >= self.total_frames:
+                return False, None
+            if self.demand_seq == 0 or self._delivered_seq >= self.demand_seq:
+                self.demand_sec = min(max(0.0, self.duration_sec - 0.02), self.cursor_pos / max(1.0, self.fps))
+                self.demand_seq += 1
+                notify_args = (self.slot_id, self.demand_seq, self.demand_sec, self.fps)
+            target_seq = self.demand_seq
+
+        if notify_args and self._on_demand:
+            self._on_demand(*notify_args)
+
+        deadline = time.time() + 10.0
+        with self._cond:
+            while (
+                not self._released
+                and self._opened
+                and not self._eof
+                and self._delivered_seq < target_seq
+            ):
+                rem = deadline - time.time()
+                if rem <= 0:
+                    return False, None
+                self._cond.wait(timeout=min(0.20, rem))
+
+            if self._released or not self._opened or self._eof or self._delivered_frame is None:
+                return False, None
+            frame = self._delivered_frame
+            self.cursor_pos += 1
+            return True, frame
+
+    def deliver_jpeg(self, seq: int, raw_bytes: bytes) -> bool:
+        arr = np.frombuffer(raw_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return False
+        with self._cond:
+            if self._released:
+                return False
+            if int(seq) >= self.demand_seq or self.demand_seq == 0:
+                self._delivered_frame = img
+                self._delivered_seq = max(self._delivered_seq, int(seq))
+                self._cond.notify_all()
+            return True
+
+    def signal_eof(self):
+        with self._cond:
+            self._eof = True
+            self._cond.notify_all()
+
+    def pending_demand(self):
+        with self._cond:
+            if (
+                not self._released
+                and self._opened
+                and not self._eof
+                and self.demand_seq > self._delivered_seq
+                and self.demand_seq > 0
+            ):
+                return {"slot_id": self.slot_id, "seq": self.demand_seq, "sec": self.demand_sec, "fps": self.fps}
+            return None
+
+    def release(self):
+        with self._cond:
+            self._released = True
+            self._opened = False
+            self._cond.notify_all()
+
+
 class WebAppState:
     """Thread-safe coordinator binding Starlette HTTP/MJPEG handlers to core engines."""
 
@@ -83,6 +230,12 @@ class WebAppState:
         self.video_engine = VideoEngine(self.scanner, self.tracker)
 
         self._ui_lock = threading.RLock()
+        self._ws_lock = threading.Lock()
+        self._ws_clients = set()
+        self._loop = None
+        self._browser_meta = {}       # slot_id -> {"filename", "duration_sec", "fps"}
+        self._browser_captures = {}   # slot_id -> latest _BrowserFrameCapture
+
         self.tracking_mode = "person"
         self.target_name = "Target Person"
         self.class_name = "dog"
@@ -98,6 +251,84 @@ class WebAppState:
 
     def on_scan_finished(self):
         self.set_status("SEARCH FINISHED — ALL FEEDS COMPLETE", "green")
+
+    def register_browser_stream(self, slot_id: int, filename: str, duration_sec: float, fps: float = 15.0):
+        slot_id = int(slot_id)
+        meta = {
+            "filename": str(filename or f"camera_{slot_id + 1}.mp4"),
+            "duration_sec": max(0.5, float(duration_sec)),
+            "fps": max(5.0, min(30.0, float(fps))),
+        }
+        src_key = f"browser://{slot_id}"
+        with self._ui_lock:
+            old_cap = self._browser_captures.pop(slot_id, None)
+            if old_cap is not None:
+                old_cap.release()
+            self._browser_meta[slot_id] = meta
+
+        def _opener():
+            m = self._browser_meta.get(slot_id, meta)
+            cap = _BrowserFrameCapture(
+                slot_id,
+                m["filename"],
+                m["duration_sec"],
+                m["fps"],
+                on_demand=self.notify_browser_demand,
+            )
+            with self._ui_lock:
+                self._browser_captures[slot_id] = cap
+            return cap
+
+        self.video_engine.register_custom_source(src_key, _opener)
+        return src_key
+
+    def clear_browser_stream(self, slot_id: int):
+        slot_id = int(slot_id)
+        src_key = f"browser://{slot_id}"
+        self.video_engine.unregister_custom_source(src_key)
+        with self._ui_lock:
+            self._browser_meta.pop(slot_id, None)
+            cap = self._browser_captures.pop(slot_id, None)
+            if cap is not None:
+                cap.release()
+
+    def notify_browser_demand(self, slot_id: int, seq: int, sec: float, fps: float):
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        payload = json.dumps(
+            {
+                "type": "need_frame",
+                "slot_id": int(slot_id),
+                "seq": int(seq),
+                "sec": float(sec),
+                "fps": float(fps),
+            }
+        )
+        try:
+            asyncio.run_coroutine_threadsafe(self._broadcast_ws_text(payload), loop)
+        except Exception:
+            pass
+
+    async def _broadcast_ws_text(self, text: str):
+        with self._ws_lock:
+            clients = list(self._ws_clients)
+        for ws in clients:
+            try:
+                await ws.send_text(text)
+            except Exception:
+                with self._ws_lock:
+                    self._ws_clients.discard(ws)
+
+    def get_pending_browser_demands(self):
+        out = []
+        with self._ui_lock:
+            caps = list(self._browser_captures.values())
+        for cap in caps:
+            d = cap.pending_demand()
+            if d is not None:
+                out.append(d)
+        return out
 
     def _encode_gallery(self):
         out = []
@@ -134,12 +365,21 @@ class WebAppState:
                 if not st["ended"]:
                     remaining_count += 1
             src = raw_slot["source"]
+            is_browser = isinstance(src, str) and src.startswith("browser://")
+            b_meta = self._browser_meta.get(i, {}) if is_browser else {}
+            if is_browser:
+                src_label = f"⚡ {b_meta.get('filename', 'Device Video')}"
+            elif src and os.path.isfile(src):
+                src_label = os.path.basename(src)
+            else:
+                src_label = src
             slots_data.append(
                 {
                     "id": i,
                     "enabled": bool(st["enabled"]),
                     "source": src,
-                    "source_label": os.path.basename(src) if (src and os.path.isfile(src)) else src,
+                    "source_label": src_label,
+                    "is_browser": is_browser,
                     "location": st["location"],
                     "speed": st["speed"],
                     "is_file": bool(st["is_file"]),
@@ -216,6 +456,8 @@ class WebAppState:
                     and os.path.isfile(self.map_visualizer.custom_blueprint_path)
                 ),
             },
+            "browser_demands": self.get_pending_browser_demands(),
+            "local_fs_enabled": not bool(os.environ.get("SPACE_ID")),
         }
 
     def render_slot_jpeg(self, slot_id, last_seq=-1):
@@ -255,9 +497,12 @@ def get_state() -> WebAppState:
 
 @asynccontextmanager
 async def lifespan(_app):
-    get_state()
+    st = get_state()
+    st._loop = asyncio.get_running_loop()
     yield
     if STATE is not None:
+        for sid in range(4):
+            STATE.clear_browser_stream(sid)
         STATE.video_engine.stop()
 
 
@@ -454,6 +699,7 @@ async def api_slot_upload_video(request: Request):
         new_loc = f"Camera {slot_id + 1} ({clean_loc})"
 
     def _apply():
+        st.clear_browser_stream(slot_id)
         if st.video_engine.is_running:
             st.video_engine.replace_slot(slot_id, saved_path, location=new_loc, speed=cur_slot["speed"])
         else:
@@ -485,6 +731,9 @@ async def api_slot_configure(request: Request):
         location = data.get("location", cur["location"])
         speed = data.get("speed", cur["speed"])
 
+        if str(source).strip() != f"browser://{slot_id}":
+            st.clear_browser_stream(slot_id)
+
         if "location" in data and data["location"] is not None:
             ve.set_slot_location(slot_id, str(location))
 
@@ -515,6 +764,7 @@ async def api_slot_remove(request: Request):
         return JSONResponse({"ok": False, "error": "Invalid camera slot."}, status_code=400)
     st = get_state()
     remaining = await asyncio.to_thread(st.video_engine.remove_slot, slot_id, True)
+    st.clear_browser_stream(slot_id)
     st.set_status(
         f"Removed Camera {slot_id + 1}" + (f" ({remaining} active)" if remaining else " — Idle"),
         "amber" if remaining else "dim",
@@ -676,6 +926,185 @@ async def api_map_blueprint_get(_request: Request):
     return FileResponse(bp)
 
 
+async def api_slot_browser_register(request: Request):
+    slot_id = int(request.path_params["slot_id"])
+    if not (0 <= slot_id < 4):
+        return JSONResponse({"ok": False, "error": "Invalid camera slot."}, status_code=400)
+
+    st = get_state()
+    data = await request.json()
+    filename = os.path.basename(str(data.get("filename") or f"device_video_{slot_id + 1}.mp4"))
+    duration_sec = float(data.get("duration_sec") or 0.0)
+    fps = float(data.get("fps") or 15.0)
+    if duration_sec <= 0:
+        return JSONResponse({"ok": False, "error": "Invalid video duration."}, status_code=400)
+
+    src_key = st.register_browser_stream(slot_id, filename, duration_sec, fps=fps)
+    clean_loc = os.path.splitext(filename)[0].replace("_", " ").strip().title()
+    cur_slot = st.video_engine.slots[slot_id]
+    new_loc = cur_slot["location"]
+    if not new_loc or new_loc.startswith("Camera"):
+        new_loc = f"Camera {slot_id + 1} ({clean_loc})"
+
+    def _apply():
+        if st.video_engine.is_running:
+            st.video_engine.replace_slot(slot_id, src_key, location=new_loc, speed=cur_slot["speed"])
+        else:
+            st.video_engine.configure_slot(
+                slot_id, enabled=True, source=src_key, location=new_loc, speed=cur_slot["speed"]
+            )
+        st.set_status(f"Camera {slot_id + 1} instant stream ready: {filename}", "green")
+
+    try:
+        await asyncio.to_thread(_apply)
+        return JSONResponse({"ok": True, "source": src_key, "location": new_loc, "filename": filename})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_slot_push_frame(request: Request):
+    slot_id = int(request.path_params["slot_id"])
+    if not (0 <= slot_id < 4):
+        return JSONResponse({"ok": False, "error": "Invalid camera slot."}, status_code=400)
+    st = get_state()
+    with st._ui_lock:
+        cap = st._browser_captures.get(slot_id)
+    if cap is None:
+        return JSONResponse({"ok": False, "error": "No active browser stream for this slot."}, status_code=404)
+
+    eof = request.query_params.get("eof") == "1"
+    if eof:
+        cap.signal_eof()
+        return JSONResponse({"ok": True, "demand": None})
+
+    try:
+        seq = int(request.query_params.get("seq") or 0)
+    except ValueError:
+        seq = 0
+    raw = await request.body()
+    ok = await asyncio.to_thread(cap.deliver_jpeg, seq, raw) if raw else False
+    return JSONResponse({"ok": bool(ok), "demand": cap.pending_demand()})
+
+
+async def ws_browser_source(websocket: WebSocket):
+    st = get_state()
+    st._loop = asyncio.get_running_loop()
+    await websocket.accept()
+    with st._ws_lock:
+        st._ws_clients.add(websocket)
+    try:
+        for d in st.get_pending_browser_demands():
+            await websocket.send_text(json.dumps({"type": "need_frame", **d}))
+        while True:
+            msg = await websocket.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            raw_bytes = msg.get("bytes")
+            if raw_bytes and len(raw_bytes) > 5:
+                slot_id = raw_bytes[0]
+                seq = int.from_bytes(raw_bytes[1:5], "big", signed=False)
+                jpeg_bytes = raw_bytes[5:]
+                with st._ui_lock:
+                    cap = st._browser_captures.get(slot_id)
+                if cap is not None:
+                    await asyncio.to_thread(cap.deliver_jpeg, seq, jpeg_bytes)
+                continue
+            txt = msg.get("text")
+            if txt:
+                try:
+                    ev = json.loads(txt)
+                    if ev.get("type") == "eof":
+                        sid = int(ev.get("slot_id", -1))
+                        with st._ui_lock:
+                            cap = st._browser_captures.get(sid)
+                        if cap is not None:
+                            cap.signal_eof()
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with st._ws_lock:
+            st._ws_clients.discard(websocket)
+
+
+_VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v", ".ts", ".flv", ".wmv"}
+
+
+async def api_fs_list(request: Request):
+    if os.environ.get("SPACE_ID"):
+        return JSONResponse(
+            {
+                "ok": True,
+                "enabled": False,
+                "reason": "Cloud container mode — use Instant Video to stream from your device without uploading.",
+            }
+        )
+
+    raw_path = str(request.query_params.get("path") or "").strip()
+
+    def _scan():
+        if not raw_path:
+            shortcuts = []
+            home = os.path.expanduser("~")
+            for label, p in [
+                ("SmartSupervise Folder", BASE_DIR),
+                ("Desktop", os.path.join(home, "Desktop")),
+                ("Videos", os.path.join(home, "Videos")),
+                ("Downloads", os.path.join(home, "Downloads")),
+                ("Home", home),
+            ]:
+                if os.path.isdir(p):
+                    shortcuts.append({"name": label, "path": p, "is_dir": True, "size_mb": None})
+            if os.name == "nt":
+                for letter in string.ascii_uppercase:
+                    drv = f"{letter}:\\"
+                    if os.path.exists(drv):
+                        shortcuts.append({"name": f"Drive ({letter}:)", "path": drv, "is_dir": True, "size_mb": None})
+            elif os.path.isdir("/"):
+                shortcuts.append({"name": "Root /", "path": "/", "is_dir": True, "size_mb": None})
+            return {"ok": True, "enabled": True, "current": "", "parent": "", "items": shortcuts}
+
+        target = os.path.abspath(raw_path)
+        if not os.path.isdir(target):
+            return {"ok": False, "error": f"Folder not found: {raw_path}"}
+
+        parent = os.path.dirname(target.rstrip("\\/")) if len(target) > 3 else ""
+        if os.name == "nt" and len(target) <= 3 and target.endswith("\\"):
+            parent = ""
+
+        dirs, files = [], []
+        try:
+            with os.scandir(target) as it:
+                for entry in it:
+                    name = entry.name
+                    if name.startswith(".") or name in ("$Recycle.Bin", "System Volume Information"):
+                        continue
+                    try:
+                        if entry.is_dir():
+                            dirs.append({"name": name, "path": entry.path, "is_dir": True, "size_mb": None})
+                        elif entry.is_file() and os.path.splitext(name)[1].lower() in _VIDEO_EXTS:
+                            sz = round(entry.stat().st_size / (1024 * 1024), 1)
+                            files.append({"name": name, "path": entry.path, "is_dir": False, "size_mb": sz})
+                    except OSError:
+                        continue
+        except PermissionError:
+            return {"ok": False, "error": f"Permission denied opening: {target}"}
+
+        dirs.sort(key=lambda x: x["name"].lower())
+        files.sort(key=lambda x: x["name"].lower())
+        return {
+            "ok": True,
+            "enabled": True,
+            "current": target,
+            "parent": parent,
+            "items": (dirs + files)[:250],
+        }
+
+    res = await asyncio.to_thread(_scan)
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+
+
 routes = [
     Route("/", index_page, methods=["GET"]),
     Route("/api/health", api_health, methods=["GET"]),
@@ -687,8 +1116,11 @@ routes = [
     Route("/api/target/clear", api_target_clear, methods=["POST"]),
     Route("/api/target/mode", api_target_mode, methods=["POST"]),
     Route("/api/slot/{slot_id:int}/upload_video", api_slot_upload_video, methods=["POST"]),
+    Route("/api/slot/{slot_id:int}/browser_register", api_slot_browser_register, methods=["POST"]),
+    Route("/api/slot/{slot_id:int}/push_frame", api_slot_push_frame, methods=["POST"]),
     Route("/api/slot/{slot_id:int}/configure", api_slot_configure, methods=["POST"]),
     Route("/api/slot/{slot_id:int}/remove", api_slot_remove, methods=["POST"]),
+    Route("/api/fs/list", api_fs_list, methods=["GET"]),
     Route("/api/control/start", api_control_start, methods=["POST"]),
     Route("/api/control/pause", api_control_pause, methods=["POST"]),
     Route("/api/control/stop", api_control_stop, methods=["POST"]),
@@ -700,6 +1132,7 @@ routes = [
     Route("/api/map/reset", api_map_reset, methods=["POST"]),
     Route("/api/map/blueprint", api_map_blueprint_upload, methods=["POST"]),
     Route("/api/map/blueprint", api_map_blueprint_get, methods=["GET"]),
+    WebSocketRoute("/ws/browser_source", ws_browser_source),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)

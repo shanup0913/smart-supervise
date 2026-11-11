@@ -397,6 +397,7 @@ class VideoEngine:
         self.has_fast_file_slots = False
         self._on_finished_callback = None
         self._lock = threading.RLock()
+        self._custom_sources = {}
 
         # Telemetry State
         self.global_clock_sec = 0.0
@@ -561,10 +562,34 @@ class VideoEngine:
             )
             self.worker_thread.start()
 
+    def register_custom_source(self, source_key: str, factory):
+        """Registers a virtual VideoCapture-compatible factory (e.g. browser frame stream)."""
+        with self._lock:
+            self._custom_sources[str(source_key).strip()] = factory
+
+    def unregister_custom_source(self, source_key: str):
+        """Removes a registered virtual VideoCapture factory."""
+        with self._lock:
+            self._custom_sources.pop(str(source_key).strip(), None)
+
     def _open_source_for_slot(self, idx, raw_src):
         """Parses and opens a file, webcam, or live URL for a slot, raising ConnectionError on failure."""
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;3000000|rtsp_transport;tcp"
         norm_src = self.normalize_stream_source(raw_src)
+
+        with self._lock:
+            custom_factory = self._custom_sources.get(norm_src)
+
+        if custom_factory is not None:
+            cap = custom_factory()
+            if cap is not None and cap.isOpened():
+                fps = float(cap.get(cv2.CAP_PROP_FPS) or 15.0)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                duration_sec = total_frames / max(1.0, fps)
+                return norm_src, True, cap, None, fps, total_frames, duration_sec
+            raise ConnectionError(
+                f"Instant browser video stream for Camera {idx+1} is not ready. Please re-select the video."
+            )
 
         if norm_src == "" or norm_src == "0":
             src = 0

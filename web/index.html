@@ -1323,6 +1323,26 @@
           <button class="btn-primary" onclick="saveIpCustom()">Apply</button>
         </div>
       </div>
+      <div style="border-top:1px solid var(--border); padding-top:10px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <span style="font-size:11px; color:var(--text-muted);">Need to upload an incompatible codec (e.g. legacy AVI)?</span>
+        <button class="btn-ghost btn-xs" onclick="closeIpHelp(); pickSlotVideo(ipModalSlot, true)">⬆ Upload Full File</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HOST PC FILE BROWSER MODAL -->
+  <div id="pcBrowserModal" class="modal-backdrop" onclick="if(event.target===this) closePcBrowser()">
+    <div class="modal-card" style="max-width:620px;">
+      <div class="card-head">
+        <strong>📂 Browse Host PC Videos (0 MB Upload) — Camera <span id="pcSlotNum">1</span></strong>
+        <button class="btn-ghost btn-xs" onclick="closePcBrowser()">✕ Close</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button class="btn-ghost btn-xs" id="pcUpBtn" onclick="pcBrowseParent()">⬆ Up</button>
+        <button class="btn-ghost btn-xs" onclick="loadPcDir('')">🏠 Drives</button>
+        <span id="pcCurPath" class="tabular" style="font-size:11px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;"></span>
+      </div>
+      <div id="pcDirList" style="display:flex; flex-direction:column; gap:5px; max-height:55dvh; overflow-y:auto; padding-right:2px;"></div>
     </div>
   </div>
 
@@ -1334,7 +1354,10 @@
     let focusSlot = null;          // null = 2x2 Grid, 0..3 = Single Focus
     let lowBandwidthMode = false;  // false = MJPEG streams, true = frame polling
     let uploadTargetSlot = 0;
+    let uploadForceFullMode = false;
     let ipModalSlot = 0;
+    let pcModalSlot = 0;
+    let pcParentPath = '';
     let photoUploadAppend = false;
     let pollTimer = null;
     let snapTimer = null;
@@ -1342,6 +1365,9 @@
     let blueprintImg = null;
     let lastBlueprintFlag = false;
     let dragInfo = null;           // { camIdx, mode: 'move'|'angle' }
+    let browserWs = null;
+    let browserWsRetryTimer = null;
+    const browserSlots = [null, null, null, null];
 
     const slotCardDOM = [];
     let slotsInitialized = false;
@@ -1467,12 +1493,15 @@
             </div>
           </div>
           <div class="row-2">
-            <button class="btn-blue btn-xs" onclick="pickSlotVideo(${i})">📁 Upload Video</button>
-            <button class="btn-ghost btn-xs" onclick="openIpHelp(${i})">📱 Cam / IP URL</button>
+            <button class="btn-blue btn-xs" onclick="pickSlotVideo(${i}, false)" title="Open phone/laptop video instantly with 0 MB pre-upload">⚡ Instant Video</button>
+            <button class="btn-ghost btn-xs pc-browse-btn" id="pcBrowseBtn${i}" onclick="openPcBrowser(${i})" title="Pick video already on host PC disk with 0 transfer">📂 Browse PC</button>
           </div>
           <div>
-            <label class="field-label" for="slotSource${i}">Source (0, URL, or uploaded file)</label>
-            <input type="text" id="slotSource${i}" placeholder="Upload video or enter 0 / RTSP / HTTP" onchange="configureSlot(${i})" />
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <label class="field-label" for="slotSource${i}" style="margin:0;">Source (0, URL, PC path, or Instant)</label>
+              <button class="btn-ghost btn-xs" style="padding:2px 6px; font-size:10px;" onclick="openIpHelp(${i})">📱 IP / Upload</button>
+            </div>
+            <input type="text" id="slotSource${i}" style="margin-top:3px;" placeholder="Pick Instant Video, Browse PC, or enter 0 / RTSP" onchange="configureSlot(${i})" />
           </div>
           <div class="row-2">
             <div>
@@ -1627,34 +1656,328 @@
       } catch (e) { showToast(e.message, 'err'); }
     }
 
-    function pickSlotVideo(slotId) {
+    function pickSlotVideo(slotId, forceFullUpload = false) {
       uploadTargetSlot = slotId;
+      uploadForceFullMode = !!forceFullUpload;
       const inp = document.getElementById('slotVideoInput');
       inp.value = '';
       inp.click();
+    }
+
+    function cleanupBrowserSlot(slotId) {
+      const st = browserSlots[slotId];
+      if (!st) return;
+      try { if (st.url) URL.revokeObjectURL(st.url); } catch {}
+      try { st.video.removeAttribute('src'); st.video.load(); } catch {}
+      browserSlots[slotId] = null;
+    }
+
+    function uploadFullVideoFile(sid, file) {
+      const fd = new FormData();
+      fd.append('file', file);
+      uploadWithProgress(`/api/slot/${sid}/upload_video`, fd, `Uploading Cam ${sid + 1} video`, async (err, res) => {
+        if (err) return showToast(err.message, 'err');
+        cleanupBrowserSlot(sid);
+        showToast(`Cam ${sid + 1} ready: ${file.name}`);
+        await fetchState();
+        updateFeedStreams();
+      });
     }
 
     document.getElementById('slotVideoInput').addEventListener('change', (ev) => {
       const file = ev.target.files && ev.target.files[0];
       if (!file) return;
       const sid = uploadTargetSlot;
-      const fd = new FormData();
-      fd.append('file', file);
-      uploadWithProgress(`/api/slot/${sid}/upload_video`, fd, `Uploading Cam ${sid + 1} video`, async (err, res) => {
-        if (err) return showToast(err.message, 'err');
-        showToast(`Cam ${sid + 1} ready: ${file.name}`);
-        await fetchState();
-        updateFeedStreams();
-      });
+      if (uploadForceFullMode) {
+        uploadFullVideoFile(sid, file);
+        return;
+      }
+
+      // Instant zero-pre-upload browser stream setup
+      cleanupBrowserSlot(sid);
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'metadata';
+
+      let settled = false;
+      video.onloadedmetadata = async () => {
+        if (settled) return;
+        settled = true;
+        const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 10.0;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        browserSlots[sid] = {
+          file,
+          url,
+          video,
+          canvas,
+          ctx,
+          busy: false,
+          latestWanted: null,
+          lastDeliveredSeq: -1,
+        };
+        connectBrowserWs();
+        try {
+          await apiJson(`/api/slot/${sid}/browser_register`, {
+            method: 'POST',
+            body: JSON.stringify({ filename: file.name, duration_sec: dur, fps: 15.0 }),
+          });
+          showToast(`⚡ Cam ${sid + 1} ready instantly (0 MB uploaded): ${file.name}`);
+          await fetchState();
+          updateFeedStreams();
+        } catch (err) {
+          showToast(err.message, 'err');
+        }
+      };
+
+      video.onerror = () => {
+        if (settled) return;
+        settled = true;
+        try { URL.revokeObjectURL(url); } catch {}
+        showToast('Codec needs full server upload — starting fallback upload...', 'err');
+        uploadFullVideoFile(sid, file);
+      };
+
+      video.src = url;
+      video.load();
     });
 
     async function removeSlot(slotId) {
       try {
+        cleanupBrowserSlot(slotId);
         await apiJson(`/api/slot/${slotId}/remove`, { method: 'POST', body: '{}' });
         showToast(`Camera ${slotId + 1} cleared`);
         await fetchState();
         updateFeedStreams();
       } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    // ── Browser On-Demand Video Frame Feeder (Zero Full Pre-Upload) ──
+    function connectBrowserWs() {
+      if (browserWs && (browserWs.readyState === WebSocket.OPEN || browserWs.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      try {
+        browserWs = new WebSocket(`${proto}//${location.host}/ws/browser_source`);
+        browserWs.binaryType = 'arraybuffer';
+        browserWs.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'need_frame') {
+              scheduleBrowserSeek(msg.slot_id, msg.seq, msg.sec);
+            }
+          } catch {}
+        };
+        browserWs.onclose = () => {
+          browserWs = null;
+          if (!browserWsRetryTimer && browserSlots.some(Boolean)) {
+            browserWsRetryTimer = setTimeout(() => {
+              browserWsRetryTimer = null;
+              connectBrowserWs();
+            }, 1500);
+          }
+        };
+        browserWs.onerror = () => {
+          try { browserWs.close(); } catch {}
+        };
+      } catch {}
+    }
+
+    function seekVideoTo(video, sec) {
+      return new Promise((resolve) => {
+        const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sec + 1;
+        const target = Math.max(0, Math.min(dur - 0.03, sec));
+        if (Math.abs((video.currentTime || 0) - target) < 0.008 && video.readyState >= 2) {
+          resolve(true);
+          return;
+        }
+        let done = false;
+        const timer = setTimeout(() => {
+          if (done) return;
+          done = true;
+          video.removeEventListener('seeked', onSeeked);
+          video.removeEventListener('error', onErr);
+          resolve(video.readyState >= 2);
+        }, 2500);
+        function onSeeked() {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          video.removeEventListener('seeked', onSeeked);
+          video.removeEventListener('error', onErr);
+          resolve(true);
+        }
+        function onErr() {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          video.removeEventListener('seeked', onSeeked);
+          video.removeEventListener('error', onErr);
+          resolve(false);
+        }
+        video.addEventListener('seeked', onSeeked);
+        video.addEventListener('error', onErr);
+        try {
+          video.currentTime = target;
+        } catch {
+          onErr();
+        }
+      });
+    }
+
+    function scheduleBrowserSeek(slotId, seq, sec) {
+      const st = browserSlots[slotId];
+      if (!st) return;
+      if (seq === 1 && st.lastDeliveredSeq > 1) {
+        st.lastDeliveredSeq = -1;
+      }
+      if (seq <= st.lastDeliveredSeq && (!st.latestWanted || seq <= st.latestWanted.seq)) return;
+      st.latestWanted = { seq, sec };
+      if (!st.busy) {
+        drainBrowserSeek(slotId);
+      }
+    }
+
+    async function drainBrowserSeek(slotId) {
+      const st = browserSlots[slotId];
+      if (!st || st.busy) return;
+      st.busy = true;
+      try {
+        while (st.latestWanted && browserSlots[slotId] === st) {
+          const req = st.latestWanted;
+          st.latestWanted = null;
+          if (req.seq <= st.lastDeliveredSeq) continue;
+
+          const ok = await seekVideoTo(st.video, req.sec);
+          if (!ok || browserSlots[slotId] !== st) continue;
+
+          const vw = st.video.videoWidth || 640;
+          const vh = st.video.videoHeight || 480;
+          const scale = vh > 480 ? (480 / vh) : 1.0;
+          const dw = Math.max(2, Math.round(vw * scale));
+          const dh = Math.max(2, Math.round(vh * scale));
+          if (st.canvas.width !== dw || st.canvas.height !== dh) {
+            st.canvas.width = dw;
+            st.canvas.height = dh;
+          }
+          st.ctx.drawImage(st.video, 0, 0, dw, dh);
+
+          const blob = await new Promise(res => st.canvas.toBlob(res, 'image/jpeg', 0.80));
+          if (!blob || browserSlots[slotId] !== st) continue;
+          const ab = await blob.arrayBuffer();
+          st.lastDeliveredSeq = Math.max(st.lastDeliveredSeq, req.seq);
+
+          if (browserWs && browserWs.readyState === WebSocket.OPEN) {
+            const packet = new Uint8Array(5 + ab.byteLength);
+            packet[0] = slotId & 0xff;
+            const dv = new DataView(packet.buffer);
+            dv.setUint32(1, req.seq >>> 0, false);
+            packet.set(new Uint8Array(ab), 5);
+            browserWs.send(packet.buffer);
+          } else {
+            const resp = await fetch(`/api/slot/${slotId}/push_frame?seq=${req.seq}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'image/jpeg' },
+              body: ab,
+            });
+            if (resp.ok) {
+              const info = await resp.json().catch(() => ({}));
+              if (info.demand && info.demand.seq > st.lastDeliveredSeq) {
+                st.latestWanted = { seq: info.demand.seq, sec: info.demand.sec };
+              }
+            }
+          }
+        }
+      } catch {
+      } finally {
+        if (st) st.busy = false;
+        if (st && st.latestWanted) drainBrowserSeek(slotId);
+      }
+    }
+
+    // ── Host PC Local File Browser Modal (0 MB Upload on LAN/Desktop) ─
+    function openPcBrowser(slotId) {
+      if (appState && appState.local_fs_enabled === false) {
+        return showToast('Cloud container mode — use ⚡ Instant Video to stream from your device!', 'err');
+      }
+      pcModalSlot = slotId;
+      document.getElementById('pcSlotNum').textContent = String(slotId + 1);
+      document.getElementById('pcBrowserModal').classList.add('open');
+      loadPcDir('');
+    }
+    function closePcBrowser() {
+      document.getElementById('pcBrowserModal').classList.remove('open');
+    }
+    function pcBrowseParent() {
+      loadPcDir(pcParentPath || '');
+    }
+    async function loadPcDir(pathStr) {
+      const listEl = document.getElementById('pcDirList');
+      listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); text-align:center;">Loading...</div>';
+      try {
+        const res = await apiJson(`/api/fs/list?path=${encodeURIComponent(pathStr || '')}`);
+        if (res.enabled === false) {
+          closePcBrowser();
+          return showToast(res.reason || 'Host disk browsing unavailable', 'err');
+        }
+        pcParentPath = res.parent || '';
+        document.getElementById('pcCurPath').textContent = res.current || 'Select Drive or Quick Folder';
+        document.getElementById('pcUpBtn').disabled = !res.current;
+
+        const items = res.items || [];
+        if (items.length === 0) {
+          listEl.innerHTML = '<div style="padding:14px; color:var(--text-dim); text-align:center;">No folders or video files found here.</div>';
+          return;
+        }
+        listEl.innerHTML = '';
+        for (const item of items) {
+          const btn = document.createElement('button');
+          btn.className = 'btn-ghost';
+          btn.style.justifyContent = 'space-between';
+          btn.style.width = '100%';
+          btn.style.textAlign = 'left';
+          const leftSpan = document.createElement('span');
+          leftSpan.style.overflow = 'hidden';
+          leftSpan.style.textOverflow = 'ellipsis';
+          leftSpan.textContent = (item.is_dir ? '📁 ' : '🎬 ') + item.name;
+          btn.appendChild(leftSpan);
+          if (!item.is_dir && item.size_mb !== null) {
+            const sz = document.createElement('span');
+            sz.className = 'tabular';
+            sz.style.fontSize = '11px';
+            sz.style.color = '#34d399';
+            sz.textContent = item.size_mb >= 1024
+              ? `${(item.size_mb / 1024).toFixed(2)} GB`
+              : `${item.size_mb} MB`;
+            btn.appendChild(sz);
+          }
+          btn.onclick = () => {
+            if (item.is_dir) loadPcDir(item.path);
+            else selectPcVideo(pcModalSlot, item.path, item.name);
+          };
+          listEl.appendChild(btn);
+        }
+      } catch (e) {
+        listEl.innerHTML = `<div style="padding:14px; color:#f87171;">${e.message}</div>`;
+      }
+    }
+    async function selectPcVideo(slotId, fullPath, fileName) {
+      closePcBrowser();
+      cleanupBrowserSlot(slotId);
+      const d = slotCardDOM[slotId];
+      const cleanName = (fileName || '').replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim();
+      if (d) {
+        d.enabled.checked = true;
+        d.source.value = fullPath;
+        if (!d.location.value || d.location.value.startsWith('Camera')) {
+          d.location.value = cleanName ? `Camera ${slotId + 1} (${cleanName})` : `Camera ${slotId + 1}`;
+        }
+      }
+      await configureSlot(slotId);
+      showToast(`📂 Opened from PC disk (0 MB upload): ${fileName}`);
     }
 
     // ── Playback & Speed Controls ────────────────────────────────────
@@ -1677,6 +2000,13 @@
         if (appState && appState.is_running) {
           await apiJson('/api/control/pause', { method: 'POST', body: '{}' });
         } else {
+          for (let i = 0; i < 4; i++) {
+            if (browserSlots[i]) {
+              browserSlots[i].lastDeliveredSeq = -1;
+              browserSlots[i].latestWanted = null;
+            }
+          }
+          connectBrowserWs();
           await apiJson('/api/control/start', {
             method: 'POST',
             body: JSON.stringify({ global_speed: selectedGlobalSpeed() }),
@@ -1804,6 +2134,7 @@
       const val = document.getElementById('ipCustomInput').value.trim();
       const d = slotCardDOM[ipModalSlot];
       if (!d) return;
+      if (!val.startsWith('browser://')) cleanupBrowserSlot(ipModalSlot);
       d.source.value = val;
       if (val) d.enabled.checked = true;
       closeIpHelp();
@@ -2251,9 +2582,16 @@
           d.badge.className = 'badge badge-ended';
           d.badge.textContent = 'ENDED';
           d.badge.style.display = 'inline-block';
+        } else if (s.is_browser) {
+          d.badge.className = 'badge badge-live';
+          d.badge.textContent = '⚡ 0-UPLOAD';
+          d.badge.style.display = 'inline-block';
         } else {
           d.badge.style.display = 'none';
         }
+
+        const pcBtn = document.getElementById(`pcBrowseBtn${i}`);
+        if (pcBtn) pcBtn.style.display = st.local_fs_enabled === false ? 'none' : 'inline-flex';
 
         // Feed Card metadata
         document.getElementById(`feedLabel${i}`).textContent = `CAM ${i + 1} · ${s.location}`;
@@ -2274,6 +2612,12 @@
           fBadge.style.display = 'none';
         }
       });
+
+      if (st.is_running && !st.is_paused && Array.isArray(st.browser_demands)) {
+        for (const dem of st.browser_demands) {
+          scheduleBrowserSeek(dem.slot_id, dem.seq, dem.sec);
+        }
+      }
 
       // Last Known Alert Banner
       const tr = st.tracker || {};

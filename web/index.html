@@ -1,0 +1,2369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>SmartSupervise — AI Multi-Camera Tracking</title>
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --surface: #111622;
+      --surface-2: #161d2d;
+      --surface-3: #1e293b;
+      --border: #253047;
+      --border-hi: #334155;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --emerald: #10b981;
+      --emerald-bg: rgba(16, 185, 129, 0.14);
+      --blue: #3b82f6;
+      --blue-bg: rgba(59, 130, 246, 0.14);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245, 158, 11, 0.14);
+      --red: #ef4444;
+      --red-bg: rgba(239, 68, 68, 0.16);
+      --cyan: #06b6d4;
+      --radius: 10px;
+      --radius-sm: 7px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+      --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    button, input, select {
+      font: inherit;
+      color: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      border: 1px solid var(--border-hi);
+      background: var(--surface-3);
+      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      font-weight: 600;
+      transition: background 0.15s, border-color 0.15s, transform 0.08s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    button:hover:not(:disabled) {
+      background: #27354d;
+      border-color: #475569;
+    }
+    button:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    input[type="text"], input[type="search"], select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+      min-width: 0;
+    }
+    input[type="text"]:focus, select:focus {
+      border-color: var(--blue);
+    }
+
+    .tabular {
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── App Shell ───────────────────────────────────────────── */
+    .app-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+    }
+
+    /* ── Top Header ──────────────────────────────────────────── */
+    .topbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 14px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      z-index: 20;
+    }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand-logo {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #059669, #2563eb);
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 14px;
+      color: #fff;
+      flex-shrink: 0;
+      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.25);
+    }
+
+    .brand-title {
+      font-weight: 800;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: block;
+      margin-top: -1px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid var(--border-hi);
+      background: var(--surface-2);
+      white-space: nowrap;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      flex-shrink: 0;
+    }
+    .status-pill.green { color: #34d399; border-color: rgba(16,185,129,.45); background: var(--emerald-bg); }
+    .status-pill.green .status-dot { background: var(--emerald); box-shadow: 0 0 8px var(--emerald); }
+    .status-pill.amber { color: #fbbf24; border-color: rgba(245,158,11,.45); background: var(--amber-bg); }
+    .status-pill.amber .status-dot { background: var(--amber); }
+    .status-pill.red { color: #f87171; border-color: rgba(239,68,68,.5); background: var(--red-bg); }
+    .status-pill.red .status-dot { background: var(--red); }
+
+    .telemetry-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .metric-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      border-radius: 7px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .metric-chip strong {
+      color: var(--text);
+      font-weight: 700;
+    }
+    .metric-chip.speed strong { color: #34d399; }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Segmented Controls / Buttons ────────────────────────── */
+    .btn-primary {
+      background: #059669;
+      border-color: #10b981;
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #047857;
+      border-color: #34d399;
+    }
+    .btn-amber {
+      background: #b45309;
+      border-color: #f59e0b;
+      color: #fff;
+    }
+    .btn-amber:hover:not(:disabled) {
+      background: #92400e;
+    }
+    .btn-danger {
+      background: #b91c1c;
+      border-color: #ef4444;
+      color: #fff;
+    }
+    .btn-danger:hover:not(:disabled) {
+      background: #991b1b;
+    }
+    .btn-blue {
+      background: #1d4ed8;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+    .btn-blue:hover:not(:disabled) {
+      background: #1e40af;
+    }
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--text-muted);
+    }
+    .btn-ghost:hover:not(:disabled) {
+      background: var(--surface-3);
+      color: var(--text);
+    }
+    .btn-xs {
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+
+    .seg-group {
+      display: flex;
+      background: var(--bg);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius-sm);
+      padding: 2px;
+      gap: 2px;
+    }
+    .seg-btn {
+      flex: 1;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      padding: 6px 8px;
+      border-radius: 5px;
+      font-size: 12px;
+    }
+    .seg-btn:hover:not(.active) {
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+    }
+    .seg-btn.active {
+      background: var(--blue);
+      color: #fff;
+    }
+    .seg-btn.active-green {
+      background: #059669;
+      color: #fff;
+    }
+
+    .speed-pills {
+      display: inline-flex;
+      background: var(--bg);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius-sm);
+      padding: 2px;
+      gap: 2px;
+    }
+    .speed-pill {
+      border: none;
+      background: transparent;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      border-radius: 5px;
+    }
+    .speed-pill.active {
+      background: #059669;
+      color: #fff;
+    }
+
+    /* ── Main 3-Column Desktop Grid ──────────────────────────── */
+    .workspace {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 355px minmax(0, 1fr) 365px;
+      gap: 10px;
+      padding: 10px;
+      overflow: hidden;
+    }
+
+    .col-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .panel-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 8px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .panel-tab {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 7px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .panel-tab.active {
+      background: var(--surface-3);
+      border-color: var(--border-hi);
+      color: #fff;
+    }
+
+    .panel-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .panel-footer {
+      flex: 0 0 auto;
+      padding: 10px;
+      background: var(--surface-2);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    /* ── Cards inside Panels ─────────────────────────────────── */
+    .card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .field-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+      display: block;
+    }
+
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    /* ── Target Gallery ──────────────────────────────────────── */
+    .gallery-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-height: 54px;
+      padding: 6px;
+      background: var(--bg);
+      border: 1px dashed var(--border-hi);
+      border-radius: var(--radius-sm);
+      align-items: center;
+    }
+    .gallery-empty {
+      font-size: 11px;
+      color: var(--text-dim);
+      width: 100%;
+      text-align: center;
+      padding: 10px 4px;
+    }
+    .gallery-item {
+      position: relative;
+      width: 56px;
+      height: 56px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--border-hi);
+      background: #000;
+      flex-shrink: 0;
+    }
+    .gallery-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .gallery-badge {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(11, 14, 20, 0.85);
+      font-size: 9px;
+      font-weight: 700;
+      text-align: center;
+      padding: 1px 2px;
+      color: #cbd5e1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .gallery-face {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--emerald);
+      color: #041c13;
+      font-size: 9px;
+      font-weight: 900;
+      display: grid;
+      place-items: center;
+    }
+
+    .class-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .class-chip {
+      padding: 4px 8px;
+      font-size: 11px;
+      border-radius: 999px;
+      background: var(--bg);
+      border: 1px solid var(--border-hi);
+      color: var(--text-muted);
+    }
+    .class-chip.active {
+      background: var(--blue-bg);
+      border-color: var(--blue);
+      color: #93c5fd;
+    }
+
+    /* ── Camera Slot Cards ───────────────────────────────────── */
+    .slot-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 9px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      transition: border-color 0.2s;
+    }
+    .slot-card.enabled { border-color: rgba(59, 130, 246, 0.45); }
+    .slot-card.spotted { border-color: var(--emerald); box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25); }
+
+    .slot-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .slot-toggle {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-weight: 700;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .slot-toggle input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--emerald);
+      cursor: pointer;
+    }
+
+    .badge {
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge-spotted { background: var(--emerald-bg); color: #34d399; border: 1px solid rgba(16,185,129,0.5); }
+    .badge-ended { background: var(--amber-bg); color: #fbbf24; border: 1px solid rgba(245,158,11,0.45); }
+    .badge-live { background: var(--blue-bg); color: #60a5fa; border: 1px solid rgba(59,130,246,0.45); }
+
+    .progress-track {
+      height: 5px;
+      border-radius: 999px;
+      background: var(--bg);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #059669, #3b82f6);
+      transition: width 0.25s linear;
+    }
+
+    /* ── Center Feed Grid ────────────────────────────────────── */
+    .center-toolbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .alert-banner {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      background: linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(59, 130, 246, 0.08));
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .alert-banner.lost {
+      background: linear-gradient(90deg, rgba(239, 68, 68, 0.2), rgba(245, 158, 11, 0.12));
+    }
+    .alert-banner.idle {
+      background: var(--surface-2);
+      color: var(--text-muted);
+    }
+    .alert-thumb {
+      width: 44px;
+      height: 32px;
+      border-radius: 5px;
+      object-fit: cover;
+      border: 1px solid var(--border-hi);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .feed-grid {
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .feed-grid.focus-mode {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+    }
+
+    .feed-card {
+      position: relative;
+      background: #070a0f;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 180px;
+      cursor: pointer;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .feed-card.spotted {
+      border-color: var(--emerald);
+      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3);
+    }
+    .feed-card.hidden-slot {
+      display: none;
+    }
+
+    .feed-header {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      right: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .feed-tag {
+      background: rgba(11, 14, 20, 0.78);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.12);
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #f8fafc;
+      max-width: 72%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .feed-stage {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: radial-gradient(circle at center, #111827 0%, #06080c 100%);
+    }
+    .feed-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .feed-placeholder {
+      text-align: center;
+      padding: 16px;
+      color: var(--text-dim);
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .feed-footer {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .feed-sub {
+      background: rgba(11, 14, 20, 0.78);
+      backdrop-filter: blur(4px);
+      border-radius: 5px;
+      padding: 2px 7px;
+      font-size: 10px;
+      color: #cbd5e1;
+    }
+
+    /* ── Radar Map & Timeline (Right) ────────────────────────── */
+    .map-box {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #070a10;
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    #radarCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .map-hint {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-align: center;
+    }
+
+    .route-pill {
+      padding: 7px 9px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      color: #93c5fd;
+      word-break: break-word;
+    }
+
+    .timeline-list {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .tl-item {
+      display: flex;
+      gap: 9px;
+      padding: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--blue);
+      border-radius: var(--radius-sm);
+      align-items: center;
+    }
+    .tl-item.ARRIVAL { border-left-color: var(--emerald); }
+    .tl-item.OVERLAP { border-left-color: var(--cyan); }
+    .tl-item.LOST { border-left-color: var(--red); }
+    .tl-thumb {
+      width: 52px;
+      height: 40px;
+      border-radius: 5px;
+      object-fit: cover;
+      background: #000;
+      border: 1px solid var(--border-hi);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .tl-body {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .tl-title {
+      font-weight: 700;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .tl-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* ── Mobile Navigation & Drawer Controls (Hidden Desktop) ─── */
+    .mobile-bar {
+      display: none;
+    }
+
+    /* ── Modals & Toast ──────────────────────────────────────── */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 7, 11, 0.84);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 90;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      background: var(--surface);
+      border: 1px solid var(--border-hi);
+      border-radius: 12px;
+      max-width: 560px;
+      width: 100%;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 90dvh;
+      overflow-y: auto;
+    }
+    .modal-img {
+      width: 100%;
+      max-height: 70dvh;
+      object-fit: contain;
+      border-radius: 8px;
+      background: #000;
+    }
+
+    .toast-stack {
+      position: fixed;
+      top: 58px;
+      right: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 100;
+      pointer-events: none;
+      max-width: 320px;
+    }
+    .toast {
+      padding: 9px 12px;
+      border-radius: 8px;
+      background: var(--surface-3);
+      border: 1px solid var(--border-hi);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      animation: fadeSlide 0.18s ease-out;
+    }
+    .toast.ok { border-color: var(--emerald); }
+    .toast.err { border-color: var(--red); background: #450a0a; }
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Tablet & Narrow Laptop (< 1180px) ───────────────────── */
+    @media (max-width: 1179px) {
+      .workspace {
+        grid-template-columns: 330px minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+      }
+      .col-right {
+        display: none;
+      }
+      .col-right.tablet-active {
+        display: flex;
+      }
+      .tablet-map-toggle {
+        display: inline-flex !important;
+      }
+    }
+
+    /* ── Mobile Phone (< 768px) ──────────────────────────────── */
+    @media (max-width: 767px) {
+      .app-shell {
+        height: 100dvh;
+      }
+      .topbar {
+        padding: 8px 10px;
+        gap: 6px;
+      }
+      .brand-sub, .topbar-actions .speed-pills, .desktop-ctrl {
+        display: none !important;
+      }
+      .telemetry-bar {
+        gap: 5px;
+      }
+      .metric-chip.eta-chip, .metric-chip.dev-chip {
+        display: none;
+      }
+      .workspace {
+        display: block;
+        padding: 8px;
+        padding-bottom: 4px;
+        overflow: hidden;
+      }
+      .col-panel {
+        height: 100%;
+        display: none;
+      }
+      .col-panel.mobile-active {
+        display: flex;
+      }
+      .feed-grid {
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+        grid-auto-rows: minmax(210px, auto);
+      }
+      .col-left .panel-footer {
+        display: none;
+      }
+      button, input, select {
+        min-height: 38px;
+      }
+      .mobile-bar {
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-top: 1px solid var(--border);
+        padding-bottom: env(safe-area-inset-bottom);
+        z-index: 30;
+      }
+      .mobile-ctrl-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface-2);
+      }
+      .mobile-nav {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px;
+        padding: 5px 8px;
+      }
+      .mob-tab {
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        flex-direction: column;
+        gap: 2px;
+        padding: 6px 4px;
+        font-size: 11px;
+        border-radius: 8px;
+      }
+      .mob-tab.active {
+        background: var(--surface-3);
+        color: #34d399;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-logo">SS</div>
+        <div>
+          <span class="brand-title">SmartSupervise</span>
+          <span class="brand-sub">Multi-Camera AI Tracker</span>
+        </div>
+        <div id="statusPill" class="status-pill">
+          <span class="status-dot"></span>
+          <span id="statusText">Idle</span>
+        </div>
+      </div>
+
+      <div class="telemetry-bar">
+        <div class="metric-chip" title="Universal Video / Live Clock">
+          <span>Clock</span>
+          <strong id="clockDisplay" class="tabular">00:00:00</strong>
+        </div>
+        <div class="metric-chip speed" title="Effective Multi-Cam Scan Speed">
+          <span>Actual</span>
+          <strong id="actualSpeed" class="tabular">1.0x</strong>
+        </div>
+        <div class="metric-chip eta-chip" title="Estimated Time Remaining">
+          <span>ETA</span>
+          <strong id="etaDisplay" class="tabular">--:--</strong>
+        </div>
+        <div class="metric-chip dev-chip" title="Compute Device">
+          <span id="deviceLabel">CPU</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="btn-ghost btn-xs tablet-map-toggle" style="display:none" onclick="toggleTabletMap()">🗺️ Map & Log</button>
+        <div class="speed-pills" id="topSpeedPills">
+          <button class="speed-pill" data-speed="1x" onclick="setGlobalSpeed('1x')">1x</button>
+          <button class="speed-pill" data-speed="5x" onclick="setGlobalSpeed('5x')">5x</button>
+          <button class="speed-pill active" data-speed="10x" onclick="setGlobalSpeed('10x')">10x</button>
+          <button class="speed-pill" data-speed="20x" onclick="setGlobalSpeed('20x')">20x</button>
+          <button class="speed-pill" data-speed="40x" onclick="setGlobalSpeed('40x')">40x</button>
+        </div>
+        <button id="topStartBtn" class="btn-primary desktop-ctrl" onclick="toggleStartOrPause()">▶ Start</button>
+        <button id="topStopBtn" class="btn-danger desktop-ctrl" onclick="stopScan()" disabled>■ Stop</button>
+      </div>
+    </header>
+
+    <!-- MAIN WORKSPACE -->
+    <main class="workspace">
+      <!-- LEFT PANEL: SETUP & CAMERAS -->
+      <section class="col-panel col-left" id="colLeft">
+        <div class="panel-tabs">
+          <button class="panel-tab active" id="tabTargetBtn" onclick="switchSetupTab('target')">🎯 Target Setup</button>
+          <button class="panel-tab" id="tabCamsBtn" onclick="switchSetupTab('cams')">📹 Cameras (1-4)</button>
+        </div>
+
+        <div class="panel-scroll">
+          <!-- TARGET TAB -->
+          <div id="paneTarget" style="display:flex; flex-direction:column; gap:10px;">
+            <div class="card">
+              <div class="card-head">
+                <span class="card-title">Tracking Mode</span>
+              </div>
+              <div class="seg-group">
+                <button class="seg-btn active" id="modePersonBtn" onclick="setTrackingMode('person')">🧑 Person 360°</button>
+                <button class="seg-btn" id="modeClassBtn" onclick="setTrackingMode('class')">📦 Class Intrusion</button>
+              </div>
+            </div>
+
+            <!-- Person 360 Sub-card -->
+            <div class="card" id="personCard">
+              <div class="card-head">
+                <span class="card-title">Target Photos</span>
+                <button class="btn-ghost btn-xs" onclick="clearTargetPhotos()">Clear</button>
+              </div>
+              <div>
+                <label class="field-label" for="targetNameInput">Target Label</label>
+                <input type="text" id="targetNameInput" value="Target Person" onchange="syncTargetSettings()" />
+              </div>
+              <div class="row-2">
+                <button class="btn-blue" onclick="pickTargetPhotos(false)">📸 Set Photos</button>
+                <button onclick="pickTargetPhotos(true)">➕ Add Angles</button>
+              </div>
+              <button class="btn-ghost" onclick="pick360Video()">🎬 Extract Angles from 360° Clip</button>
+              <div id="galleryStrip" class="gallery-strip">
+                <div class="gallery-empty">Upload 1–8 clear photos or a 360° reference clip</div>
+              </div>
+              <input type="file" id="targetPhotoInput" accept="image/*" multiple hidden />
+              <input type="file" id="target360Input" accept="video/*" hidden />
+            </div>
+
+            <!-- Class Sub-card -->
+            <div class="card" id="classCard" style="display:none;">
+              <div class="card-head">
+                <span class="card-title">Class Object Filter</span>
+              </div>
+              <div>
+                <label class="field-label" for="classNameInput">Target Object Class</label>
+                <input type="text" id="classNameInput" value="person" onchange="syncTargetSettings()" placeholder="e.g. person, backpack, car" />
+              </div>
+              <div class="class-chips" id="classChips">
+                <button class="class-chip active" onclick="pickClassPreset('person')">person</button>
+                <button class="class-chip" onclick="pickClassPreset('backpack')">backpack</button>
+                <button class="class-chip" onclick="pickClassPreset('handbag')">handbag</button>
+                <button class="class-chip" onclick="pickClassPreset('suitcase')">suitcase</button>
+                <button class="class-chip" onclick="pickClassPreset('cell phone')">cell phone</button>
+                <button class="class-chip" onclick="pickClassPreset('car')">car</button>
+                <button class="class-chip" onclick="pickClassPreset('motorcycle')">motorcycle</button>
+                <button class="class-chip" onclick="pickClassPreset('bicycle')">bicycle</button>
+              </div>
+            </div>
+
+            <!-- Sensitivity Card -->
+            <div class="card">
+              <div class="card-head">
+                <span class="card-title">Match Sensitivity</span>
+              </div>
+              <div class="seg-group">
+                <button class="seg-btn" id="sensStrictBtn" onclick="setSensitivity('strict')">Strict</button>
+                <button class="seg-btn active-green" id="sensBalancedBtn" onclick="setSensitivity('balanced')">Balanced</button>
+                <button class="seg-btn" id="sensFlexibleBtn" onclick="setSensitivity('flexible')">Flexible</button>
+              </div>
+              <span style="font-size:11px; color:var(--text-dim);">Strict avoids false alarms; Flexible recovers difficult side/back angles.</span>
+            </div>
+          </div>
+
+          <!-- CAMERAS TAB -->
+          <div id="paneCams" style="display:none; flex-direction:column; gap:10px;">
+            <div id="slotsContainer" style="display:flex; flex-direction:column; gap:8px;"></div>
+            <input type="file" id="slotVideoInput" accept="video/*" hidden />
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span style="font-size:11px; font-weight:700; color:var(--text-muted);">GLOBAL SPEED</span>
+            <div class="speed-pills" id="sideSpeedPills">
+              <button class="speed-pill" data-speed="1x" onclick="setGlobalSpeed('1x')">1x</button>
+              <button class="speed-pill" data-speed="5x" onclick="setGlobalSpeed('5x')">5x</button>
+              <button class="speed-pill active" data-speed="10x" onclick="setGlobalSpeed('10x')">10x</button>
+              <button class="speed-pill" data-speed="20x" onclick="setGlobalSpeed('20x')">20x</button>
+              <button class="speed-pill" data-speed="40x" onclick="setGlobalSpeed('40x')">40x</button>
+            </div>
+          </div>
+          <div class="row-2">
+            <button id="sideStartBtn" class="btn-primary" onclick="toggleStartOrPause()">▶ Start Scan</button>
+            <button id="sideStopBtn" class="btn-danger" onclick="stopScan()" disabled>■ Stop Scan</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- CENTER PANEL: LIVE VIDEO FEEDS -->
+      <section class="col-panel col-center mobile-active" id="colCenter">
+        <div class="center-toolbar">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <div class="seg-group" style="width:auto;">
+              <button class="seg-btn active" id="viewGridBtn" onclick="setFocusSlot(null)">2x2 Grid</button>
+              <button class="seg-btn" id="viewFocus0" onclick="setFocusSlot(0)">C1</button>
+              <button class="seg-btn" id="viewFocus1" onclick="setFocusSlot(1)">C2</button>
+              <button class="seg-btn" id="viewFocus2" onclick="setFocusSlot(2)">C3</button>
+              <button class="seg-btn" id="viewFocus3" onclick="setFocusSlot(3)">C4</button>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button id="streamModeBtn" class="btn-ghost btn-xs" onclick="toggleStreamMode()" title="Switch between continuous MJPEG stream and low-data Snapshot polling">📡 Stream: MJPEG</button>
+          </div>
+        </div>
+
+        <!-- Last Known Alert Strip -->
+        <div id="alertBanner" class="alert-banner idle">
+          <div style="min-width:0;">
+            <strong id="alertHeadline">Ready — configure target & cameras, then press Start</strong>
+            <div id="alertSub" style="font-size:11px; color:var(--text-muted); margin-top:1px;">Supports local files, webcam, mobile camera IP URLs, and 360° ReID</div>
+          </div>
+          <img id="alertThumb" class="alert-thumb" style="display:none;" alt="Last sighting snapshot" onclick="openLightbox(this.src, 'Last Known Sighting')" />
+        </div>
+
+        <div class="feed-grid" id="feedGrid">
+          <!-- 4 Feed Cards injected/kept fixed for stable img tags -->
+          <div class="feed-card" id="feedCard0" onclick="onFeedCardClick(0)">
+            <div class="feed-header">
+              <span class="feed-tag" id="feedLabel0">CAM 1 · Main Entrance</span>
+              <span class="badge" id="feedBadge0" style="display:none;">SPOTTED</span>
+            </div>
+            <div class="feed-stage">
+              <img class="feed-img" id="feedImg0" alt="Camera 1 stream" style="display:none;" />
+              <div class="feed-placeholder" id="feedPh0">
+                <span>📹 Camera 1</span>
+                <span style="font-size:11px;">Enable & set video or press Start</span>
+              </div>
+            </div>
+            <div class="feed-footer">
+              <span class="feed-sub tabular" id="feedProg0">0%</span>
+              <span class="feed-sub" id="feedSpd0">10x</span>
+            </div>
+          </div>
+
+          <div class="feed-card" id="feedCard1" onclick="onFeedCardClick(1)">
+            <div class="feed-header">
+              <span class="feed-tag" id="feedLabel1">CAM 2 · Lobby / Corridor</span>
+              <span class="badge" id="feedBadge1" style="display:none;">SPOTTED</span>
+            </div>
+            <div class="feed-stage">
+              <img class="feed-img" id="feedImg1" alt="Camera 2 stream" style="display:none;" />
+              <div class="feed-placeholder" id="feedPh1">
+                <span>📹 Camera 2</span>
+                <span style="font-size:11px;">Disabled</span>
+              </div>
+            </div>
+            <div class="feed-footer">
+              <span class="feed-sub tabular" id="feedProg1">0%</span>
+              <span class="feed-sub" id="feedSpd1">10x</span>
+            </div>
+          </div>
+
+          <div class="feed-card" id="feedCard2" onclick="onFeedCardClick(2)">
+            <div class="feed-header">
+              <span class="feed-tag" id="feedLabel2">CAM 3 · Stairwell / Elevator</span>
+              <span class="badge" id="feedBadge2" style="display:none;">SPOTTED</span>
+            </div>
+            <div class="feed-stage">
+              <img class="feed-img" id="feedImg2" alt="Camera 3 stream" style="display:none;" />
+              <div class="feed-placeholder" id="feedPh2">
+                <span>📹 Camera 3</span>
+                <span style="font-size:11px;">Disabled</span>
+              </div>
+            </div>
+            <div class="feed-footer">
+              <span class="feed-sub tabular" id="feedProg2">0%</span>
+              <span class="feed-sub" id="feedSpd2">10x</span>
+            </div>
+          </div>
+
+          <div class="feed-card" id="feedCard3" onclick="onFeedCardClick(3)">
+            <div class="feed-header">
+              <span class="feed-tag" id="feedLabel3">CAM 4 · Exit / Parking Gate</span>
+              <span class="badge" id="feedBadge3" style="display:none;">SPOTTED</span>
+            </div>
+            <div class="feed-stage">
+              <img class="feed-img" id="feedImg3" alt="Camera 4 stream" style="display:none;" />
+              <div class="feed-placeholder" id="feedPh3">
+                <span>📹 Camera 4</span>
+                <span style="font-size:11px;">Disabled</span>
+              </div>
+            </div>
+            <div class="feed-footer">
+              <span class="feed-sub tabular" id="feedProg3">0%</span>
+              <span class="feed-sub" id="feedSpd3">10x</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT PANEL: RADAR MAP & TIMELINE -->
+      <section class="col-panel col-right" id="colRight">
+        <div class="panel-tabs">
+          <button class="panel-tab active" id="tabMapBothBtn" onclick="scrollRightTop()">🗺️ Radar Map & Timeline</button>
+          <button class="panel-tab tablet-map-toggle" style="display:none; flex:0;" onclick="toggleTabletMap()">✕</button>
+        </div>
+
+        <div class="panel-scroll" id="rightScroll">
+          <!-- Radar Map Card -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Live Facility Radar</span>
+              <div style="display:flex; gap:4px;">
+                <button class="btn-ghost btn-xs" id="fovToggleBtn" onclick="toggleFovCones()" title="Toggle FOV Cones">👁️ FOV</button>
+                <button class="btn-ghost btn-xs" onclick="pickBlueprint()" title="Upload Custom Floorplan">📐 Plan</button>
+                <button class="btn-ghost btn-xs" onclick="resetRadarMap()" title="Reset Camera Pins">↺ Reset</button>
+              </div>
+            </div>
+            <div class="map-box">
+              <canvas id="radarCanvas"></canvas>
+            </div>
+            <div class="map-hint">Drag pin center to move camera · Drag orange aim dot to rotate FOV</div>
+            <input type="file" id="blueprintInput" accept="image/*" hidden />
+          </div>
+
+          <!-- Route & Export Card -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Chronological Route (<span id="sightingCount">0</span>)</span>
+              <div style="display:flex; gap:4px;">
+                <button class="btn-ghost btn-xs" onclick="exportLog('csv')">⬇ CSV</button>
+                <button class="btn-ghost btn-xs" onclick="exportLog('json')">⬇ JSON</button>
+                <button class="btn-ghost btn-xs" onclick="clearTrackerLog()">Clear</button>
+              </div>
+            </div>
+            <div id="routeArrowBox" class="route-pill">Awaiting first target sighting...</div>
+            <div id="timelineList" class="timeline-list">
+              <div style="font-size:11px; color:var(--text-dim); text-align:center; padding:12px;">No detections logged yet</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- MOBILE BOTTOM BAR -->
+    <div class="mobile-bar">
+      <div class="mobile-ctrl-strip">
+        <div class="speed-pills" id="mobSpeedPills">
+          <button class="speed-pill" data-speed="1x" onclick="setGlobalSpeed('1x')">1x</button>
+          <button class="speed-pill" data-speed="5x" onclick="setGlobalSpeed('5x')">5x</button>
+          <button class="speed-pill active" data-speed="10x" onclick="setGlobalSpeed('10x')">10x</button>
+          <button class="speed-pill" data-speed="20x" onclick="setGlobalSpeed('20x')">20x</button>
+          <button class="speed-pill" data-speed="40x" onclick="setGlobalSpeed('40x')">40x</button>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button id="mobStartBtn" class="btn-primary btn-xs" onclick="toggleStartOrPause()">▶ Start</button>
+          <button id="mobStopBtn" class="btn-danger btn-xs" onclick="stopScan()" disabled>■ Stop</button>
+        </div>
+      </div>
+      <nav class="mobile-nav">
+        <button class="mob-tab active" id="mobNavLive" onclick="switchMobilePane('live')"><span>📹</span><span>Live</span></button>
+        <button class="mob-tab" id="mobNavTarget" onclick="switchMobilePane('target')"><span>🎯</span><span>Target</span></button>
+        <button class="mob-tab" id="mobNavCams" onclick="switchMobilePane('cams')"><span>📷</span><span>Cameras</span></button>
+        <button class="mob-tab" id="mobNavMap" onclick="switchMobilePane('map')"><span>🗺️</span><span>Map/Log</span></button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- LIGHTBOX / IP CAM MODAL -->
+  <div id="lightboxModal" class="modal-backdrop" onclick="if(event.target===this) closeLightbox()">
+    <div class="modal-card">
+      <div class="card-head">
+        <strong id="lightboxTitle">Sighting Snapshot</strong>
+        <button class="btn-ghost btn-xs" onclick="closeLightbox()">✕ Close</button>
+      </div>
+      <img id="lightboxImg" class="modal-img" alt="Snapshot preview" />
+    </div>
+  </div>
+
+  <div id="ipHelpModal" class="modal-backdrop" onclick="if(event.target===this) closeIpHelp()">
+    <div class="modal-card">
+      <div class="card-head">
+        <strong>📱 Connect Phone Camera / IP Stream</strong>
+        <button class="btn-ghost btn-xs" onclick="closeIpHelp()">✕ Close</button>
+      </div>
+      <p style="font-size:12px; color:var(--text-muted);">
+        To stream a phone live into SmartSupervise on the same Wi-Fi, open <strong>IP Webcam</strong> (Android) or an MJPEG/RTSP camera app on your phone, then paste its stream URL below:
+      </p>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('0')">💻 0 — Built-in / USB Webcam</button>
+        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('http://192.168.1.100:8080/video')">📱 Android IP Webcam (http://.../video)</button>
+        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('http://192.168.1.100:4747/video')">📱 DroidCam MJPEG (http://.../video)</button>
+        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('rtsp://admin:password@192.168.1.100:554/stream1')">📡 CCTV RTSP Stream (rtsp://...)</button>
+      </div>
+      <div>
+        <label class="field-label" for="ipCustomInput">Custom URL or File Path for Camera <span id="ipSlotNum">1</span></label>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="ipCustomInput" placeholder="http://192.168.1.X:8080/video" />
+          <button class="btn-primary" onclick="saveIpCustom()">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastStack" class="toast-stack"></div>
+
+  <script>
+    // ── Global App State ─────────────────────────────────────────────
+    let appState = null;
+    let focusSlot = null;          // null = 2x2 Grid, 0..3 = Single Focus
+    let lowBandwidthMode = false;  // false = MJPEG streams, true = frame polling
+    let uploadTargetSlot = 0;
+    let ipModalSlot = 0;
+    let photoUploadAppend = false;
+    let pollTimer = null;
+    let snapTimer = null;
+    let radarAnimPhase = 0;
+    let blueprintImg = null;
+    let lastBlueprintFlag = false;
+    let dragInfo = null;           // { camIdx, mode: 'move'|'angle' }
+
+    const slotCardDOM = [];
+    let slotsInitialized = false;
+
+    // ── Toast Utility ────────────────────────────────────────────────
+    function showToast(msg, kind = 'ok') {
+      const stack = document.getElementById('toastStack');
+      const el = document.createElement('div');
+      el.className = `toast ${kind === 'err' ? 'err' : 'ok'}`;
+      el.textContent = msg;
+      stack.appendChild(el);
+      setTimeout(() => { el.remove(); }, 3400);
+    }
+
+    // ── HTTP Helpers ─────────────────────────────────────────────────
+    async function apiJson(url, opts = {}) {
+      const res = await fetch(url, {
+        headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+        ...opts,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      return data;
+    }
+
+    function uploadWithProgress(url, formData, labelText, onDone) {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      let toastEl = null;
+      xhr.upload.onprogress = (e) => {
+        if (!toastEl) {
+          toastEl = document.createElement('div');
+          toastEl.className = 'toast ok';
+          document.getElementById('toastStack').appendChild(toastEl);
+        }
+        const pct = e.lengthComputable ? Math.round((e.loaded / e.total) * 100) : 0;
+        toastEl.textContent = `${labelText}: ${pct}%`;
+      };
+      xhr.onload = () => {
+        if (toastEl) toastEl.remove();
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch {}
+        if (xhr.status >= 200 && xhr.status < 300 && data.ok !== false) {
+          onDone(null, data);
+        } else {
+          onDone(new Error(data.error || `Upload failed (${xhr.status})`));
+        }
+      };
+      xhr.onerror = () => {
+        if (toastEl) toastEl.remove();
+        onDone(new Error('Network error during upload'));
+      };
+      xhr.send(formData);
+    }
+
+    // ── Navigation / Layout Switching ────────────────────────────────
+    function switchSetupTab(which) {
+      const isTarget = which === 'target';
+      document.getElementById('paneTarget').style.display = isTarget ? 'flex' : 'none';
+      document.getElementById('paneCams').style.display = isTarget ? 'none' : 'flex';
+      document.getElementById('tabTargetBtn').classList.toggle('active', isTarget);
+      document.getElementById('tabCamsBtn').classList.toggle('active', !isTarget);
+    }
+
+    function switchMobilePane(which) {
+      const colLeft = document.getElementById('colLeft');
+      const colCenter = document.getElementById('colCenter');
+      const colRight = document.getElementById('colRight');
+      [colLeft, colCenter, colRight].forEach(c => c.classList.remove('mobile-active'));
+
+      if (which === 'live') {
+        colCenter.classList.add('mobile-active');
+      } else if (which === 'target') {
+        colLeft.classList.add('mobile-active');
+        switchSetupTab('target');
+      } else if (which === 'cams') {
+        colLeft.classList.add('mobile-active');
+        switchSetupTab('cams');
+      } else if (which === 'map') {
+        colRight.classList.add('mobile-active');
+        setTimeout(drawRadarMap, 40);
+      }
+
+      document.getElementById('mobNavLive').classList.toggle('active', which === 'live');
+      document.getElementById('mobNavTarget').classList.toggle('active', which === 'target');
+      document.getElementById('mobNavCams').classList.toggle('active', which === 'cams');
+      document.getElementById('mobNavMap').classList.toggle('active', which === 'map');
+      updateFeedStreams();
+    }
+
+    function toggleTabletMap() {
+      const right = document.getElementById('colRight');
+      right.classList.toggle('tablet-active');
+      if (right.classList.contains('tablet-active')) {
+        setTimeout(drawRadarMap, 40);
+      }
+    }
+
+    function scrollRightTop() {
+      document.getElementById('rightScroll').scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // ── Setup & Camera Card Builder ──────────────────────────────────
+    function buildSlotCards() {
+      if (slotsInitialized) return;
+      slotsInitialized = true;
+      const container = document.getElementById('slotsContainer');
+      for (let i = 0; i < 4; i++) {
+        const card = document.createElement('div');
+        card.className = 'slot-card';
+        card.id = `slotCard${i}`;
+        card.innerHTML = `
+          <div class="slot-top">
+            <label class="slot-toggle">
+              <input type="checkbox" id="slotEnabled${i}" onchange="configureSlot(${i})" />
+              <span>CAM ${i + 1}</span>
+            </label>
+            <div style="display:flex; align-items:center; gap:5px;">
+              <span class="badge" id="slotStatusBadge${i}" style="display:none;"></span>
+              <button class="btn-ghost btn-xs" onclick="removeSlot(${i})" title="Clear / Disable Slot">✕</button>
+            </div>
+          </div>
+          <div class="row-2">
+            <button class="btn-blue btn-xs" onclick="pickSlotVideo(${i})">📁 Upload Video</button>
+            <button class="btn-ghost btn-xs" onclick="openIpHelp(${i})">📱 Cam / IP URL</button>
+          </div>
+          <div>
+            <label class="field-label" for="slotSource${i}">Source (0, URL, or uploaded file)</label>
+            <input type="text" id="slotSource${i}" placeholder="Upload video or enter 0 / RTSP / HTTP" onchange="configureSlot(${i})" />
+          </div>
+          <div class="row-2">
+            <div>
+              <label class="field-label" for="slotLoc${i}">Location</label>
+              <input type="text" id="slotLoc${i}" onchange="configureSlot(${i})" />
+            </div>
+            <div>
+              <label class="field-label" for="slotSpeed${i}">Cam Speed</label>
+              <select id="slotSpeed${i}" onchange="configureSlot(${i})">
+                <option value="1x">1x Real-time</option>
+                <option value="5x">5x Fast</option>
+                <option value="10x" selected>10x Turbo</option>
+                <option value="20x">20x Ultra</option>
+                <option value="40x">40x Hyper</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="progress-track" style="flex:1;"><div class="progress-fill" id="slotBar${i}"></div></div>
+            <span class="tabular" id="slotProgTxt${i}" style="font-size:10px; color:var(--text-dim);">0%</span>
+          </div>
+        `;
+        container.appendChild(card);
+        slotCardDOM.push({
+          card,
+          enabled: document.getElementById(`slotEnabled${i}`),
+          badge: document.getElementById(`slotStatusBadge${i}`),
+          source: document.getElementById(`slotSource${i}`),
+          location: document.getElementById(`slotLoc${i}`),
+          speed: document.getElementById(`slotSpeed${i}`),
+          bar: document.getElementById(`slotBar${i}`),
+          progTxt: document.getElementById(`slotProgTxt${i}`),
+        });
+      }
+    }
+
+    // ── Target Controls ──────────────────────────────────────────────
+    async function setTrackingMode(mode) {
+      try {
+        await apiJson('/api/target/mode', {
+          method: 'POST',
+          body: JSON.stringify({
+            tracking_mode: mode,
+            target_name: document.getElementById('targetNameInput').value.trim() || 'Target Person',
+            class_name: document.getElementById('classNameInput').value.trim() || 'person',
+            sensitivity: currentSensitivity(),
+          }),
+        });
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    function currentSensitivity() {
+      if (document.getElementById('sensStrictBtn').classList.contains('active-green')) return 'strict';
+      if (document.getElementById('sensFlexibleBtn').classList.contains('active-green')) return 'flexible';
+      return 'balanced';
+    }
+
+    async function setSensitivity(sens) {
+      try {
+        await apiJson('/api/target/mode', {
+          method: 'POST',
+          body: JSON.stringify({ sensitivity: sens }),
+        });
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    async function syncTargetSettings() {
+      try {
+        await apiJson('/api/target/mode', {
+          method: 'POST',
+          body: JSON.stringify({
+            target_name: document.getElementById('targetNameInput').value.trim() || 'Target Person',
+            class_name: document.getElementById('classNameInput').value.trim() || 'person',
+          }),
+        });
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    async function pickClassPreset(cls) {
+      document.getElementById('classNameInput').value = cls;
+      await syncTargetSettings();
+    }
+
+    function pickTargetPhotos(append) {
+      photoUploadAppend = append;
+      const inp = document.getElementById('targetPhotoInput');
+      inp.value = '';
+      inp.click();
+    }
+
+    document.getElementById('targetPhotoInput').addEventListener('change', (ev) => {
+      const files = ev.target.files;
+      if (!files || !files.length) return;
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      fd.append('name', document.getElementById('targetNameInput').value.trim() || 'Target Person');
+      fd.append('append', photoUploadAppend ? 'true' : 'false');
+      uploadWithProgress('/api/target/upload', fd, 'Uploading target photo(s)', async (err, res) => {
+        if (err) return showToast(err.message, 'err');
+        showToast(`Added ${res.added} profile(s) · Total ${res.total_profiles}`);
+        await fetchState();
+      });
+    });
+
+    function pick360Video() {
+      const inp = document.getElementById('target360Input');
+      inp.value = '';
+      inp.click();
+    }
+
+    document.getElementById('target360Input').addEventListener('change', (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('name', document.getElementById('targetNameInput').value.trim() || 'Target Person');
+      uploadWithProgress('/api/target/upload_360_video', fd, 'Extracting 360° angles', async (err, res) => {
+        if (err) return showToast(err.message, 'err');
+        showToast(`Extracted ${res.extracted} 360° angle keyframes`);
+        await fetchState();
+      });
+    });
+
+    async function clearTargetPhotos() {
+      try {
+        await apiJson('/api/target/clear', { method: 'POST', body: '{}' });
+        showToast('Cleared target gallery');
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    // ── Slot Controls ────────────────────────────────────────────────
+    async function configureSlot(slotId) {
+      const d = slotCardDOM[slotId];
+      if (!d) return;
+      try {
+        const res = await apiJson(`/api/slot/${slotId}/configure`, {
+          method: 'POST',
+          body: JSON.stringify({
+            enabled: d.enabled.checked,
+            source: d.source.value.trim(),
+            location: d.location.value.trim() || `Camera ${slotId + 1}`,
+            speed: d.speed.value,
+          }),
+        });
+        d.speed.value = res.applied_speed || d.speed.value;
+        await fetchState();
+        updateFeedStreams();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    function pickSlotVideo(slotId) {
+      uploadTargetSlot = slotId;
+      const inp = document.getElementById('slotVideoInput');
+      inp.value = '';
+      inp.click();
+    }
+
+    document.getElementById('slotVideoInput').addEventListener('change', (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const sid = uploadTargetSlot;
+      const fd = new FormData();
+      fd.append('file', file);
+      uploadWithProgress(`/api/slot/${sid}/upload_video`, fd, `Uploading Cam ${sid + 1} video`, async (err, res) => {
+        if (err) return showToast(err.message, 'err');
+        showToast(`Cam ${sid + 1} ready: ${file.name}`);
+        await fetchState();
+        updateFeedStreams();
+      });
+    });
+
+    async function removeSlot(slotId) {
+      try {
+        await apiJson(`/api/slot/${slotId}/remove`, { method: 'POST', body: '{}' });
+        showToast(`Camera ${slotId + 1} cleared`);
+        await fetchState();
+        updateFeedStreams();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    // ── Playback & Speed Controls ────────────────────────────────────
+    function selectedGlobalSpeed() {
+      return appState?.config?.global_speed || '10x';
+    }
+
+    async function setGlobalSpeed(speed) {
+      try {
+        await apiJson('/api/control/speed', {
+          method: 'POST',
+          body: JSON.stringify({ global_speed: speed }),
+        });
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    async function toggleStartOrPause() {
+      try {
+        if (appState && appState.is_running) {
+          await apiJson('/api/control/pause', { method: 'POST', body: '{}' });
+        } else {
+          await apiJson('/api/control/start', {
+            method: 'POST',
+            body: JSON.stringify({ global_speed: selectedGlobalSpeed() }),
+          });
+        }
+        await fetchState();
+        updateFeedStreams(true);
+      } catch (e) {
+        showToast(e.message, 'err');
+      }
+    }
+
+    async function stopScan() {
+      try {
+        await apiJson('/api/control/stop', { method: 'POST', body: '{}' });
+        await fetchState();
+        updateFeedStreams();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    // ── Feed Grid, Focus & Stream Management ─────────────────────────
+    function setFocusSlot(slotId) {
+      focusSlot = slotId;
+      document.getElementById('feedGrid').classList.toggle('focus-mode', slotId !== null);
+      document.getElementById('viewGridBtn').classList.toggle('active', slotId === null);
+      for (let i = 0; i < 4; i++) {
+        document.getElementById(`viewFocus${i}`).classList.toggle('active', slotId === i);
+        const card = document.getElementById(`feedCard${i}`);
+        card.classList.toggle('hidden-slot', slotId !== null && slotId !== i);
+      }
+      updateFeedStreams(true);
+    }
+
+    function onFeedCardClick(slotId) {
+      if (focusSlot === slotId) {
+        setFocusSlot(null);
+      } else {
+        setFocusSlot(slotId);
+      }
+    }
+
+    function toggleStreamMode() {
+      lowBandwidthMode = !lowBandwidthMode;
+      document.getElementById('streamModeBtn').textContent = lowBandwidthMode
+        ? '📷 Stream: Snapshot'
+        : '📡 Stream: MJPEG';
+      updateFeedStreams(true);
+    }
+
+    function updateFeedStreams(forceReload = false) {
+      if (!appState) return;
+      const running = appState.is_running;
+      for (let i = 0; i < 4; i++) {
+        const s = appState.slots[i];
+        const img = document.getElementById(`feedImg${i}`);
+        const ph = document.getElementById(`feedPh${i}`);
+        const card = document.getElementById(`feedCard${i}`);
+        const visible = focusSlot === null || focusSlot === i;
+        const shouldStream = running && s.enabled && visible;
+
+        if (!shouldStream) {
+          if (img.dataset.activeUrl) {
+            img.removeAttribute('src');
+            img.dataset.activeUrl = '';
+          }
+          img.style.display = 'none';
+          ph.style.display = 'flex';
+          ph.querySelector('span:last-child').textContent = s.enabled
+            ? (s.source_label ? `Ready: ${s.source_label}` : 'Press Start to stream')
+            : 'Disabled (enable in Cameras tab)';
+          continue;
+        }
+
+        if (lowBandwidthMode) {
+          img.dataset.activeUrl = 'snapshot';
+          img.style.display = 'block';
+          ph.style.display = 'none';
+        } else {
+          const targetUrl = `/api/stream/${i}`;
+          if (forceReload || img.dataset.activeUrl !== targetUrl) {
+            img.dataset.activeUrl = targetUrl;
+            img.src = `${targetUrl}?t=${Date.now()}`;
+          }
+          img.style.display = 'block';
+          ph.style.display = 'none';
+        }
+      }
+    }
+
+    function pollSnapshotFrames() {
+      if (!appState || !appState.is_running || !lowBandwidthMode) return;
+      for (let i = 0; i < 4; i++) {
+        const s = appState.slots[i];
+        const visible = focusSlot === null || focusSlot === i;
+        if (s.enabled && visible) {
+          const img = document.getElementById(`feedImg${i}`);
+          img.src = `/api/frame/${i}?t=${Date.now()}`;
+        }
+      }
+    }
+
+    // ── Modals & Helpers ─────────────────────────────────────────────
+    function openLightbox(src, title = 'Sighting Snapshot') {
+      document.getElementById('lightboxTitle').textContent = title;
+      document.getElementById('lightboxImg').src = src;
+      document.getElementById('lightboxModal').classList.add('open');
+    }
+    function closeLightbox() {
+      document.getElementById('lightboxModal').classList.remove('open');
+    }
+
+    function openIpHelp(slotId) {
+      ipModalSlot = slotId;
+      document.getElementById('ipSlotNum').textContent = String(slotId + 1);
+      document.getElementById('ipCustomInput').value = slotCardDOM[slotId]?.source.value || '';
+      document.getElementById('ipHelpModal').classList.add('open');
+    }
+    function closeIpHelp() {
+      document.getElementById('ipHelpModal').classList.remove('open');
+    }
+    function applyIpPreset(val) {
+      document.getElementById('ipCustomInput').value = val;
+    }
+    async function saveIpCustom() {
+      const val = document.getElementById('ipCustomInput').value.trim();
+      const d = slotCardDOM[ipModalSlot];
+      if (!d) return;
+      d.source.value = val;
+      if (val) d.enabled.checked = true;
+      closeIpHelp();
+      await configureSlot(ipModalSlot);
+    }
+
+    // ── Tracker & Exports ────────────────────────────────────────────
+    function exportLog(fmt) {
+      if (!appState || !appState.tracker.total_sightings) {
+        return showToast('No sightings logged yet to export', 'err');
+      }
+      window.location.href = `/api/tracker/export/${fmt}`;
+    }
+
+    async function clearTrackerLog() {
+      try {
+        await apiJson('/api/tracker/clear', { method: 'POST', body: '{}' });
+        showToast('Cleared timeline log');
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    // ── Radar Map Controls & PointerEvents Canvas ────────────────────
+    async function toggleFovCones() {
+      try {
+        await apiJson('/api/map/config', {
+          method: 'POST',
+          body: JSON.stringify({ toggle_fov: true }),
+        });
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    async function resetRadarMap() {
+      try {
+        await apiJson('/api/map/reset', { method: 'POST', body: '{}' });
+        showToast('Radar map pins reset');
+        await fetchState();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    function pickBlueprint() {
+      if (appState?.map?.has_blueprint) {
+        if (confirm('Clear custom floorplan and revert to architectural radar grid? (Cancel to upload a different floorplan)')) {
+          const fd = new FormData();
+          fd.append('clear', 'true');
+          uploadWithProgress('/api/map/blueprint', fd, 'Clearing floorplan', async (err) => {
+            if (err) return showToast(err.message, 'err');
+            blueprintImg = null;
+            lastBlueprintFlag = false;
+            await fetchState();
+          });
+          return;
+        }
+      }
+      const inp = document.getElementById('blueprintInput');
+      inp.value = '';
+      inp.click();
+    }
+
+    document.getElementById('blueprintInput').addEventListener('change', (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      uploadWithProgress('/api/map/blueprint', fd, 'Uploading floorplan', async (err) => {
+        if (err) return showToast(err.message, 'err');
+        loadBlueprintImage();
+        showToast('Floorplan updated');
+        await fetchState();
+      });
+    });
+
+    function loadBlueprintImage() {
+      const img = new Image();
+      img.onload = () => { blueprintImg = img; drawRadarMap(); };
+      img.onerror = () => { blueprintImg = null; };
+      img.src = `/api/map/blueprint?t=${Date.now()}`;
+    }
+
+    function drawRadarMap() {
+      const canvas = document.getElementById('radarCanvas');
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width < 20 || rect.height < 20) return;
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.round(rect.width * dpr);
+      const h = Math.round(rect.height * dpr);
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+
+      const ctx = canvas.getContext('2d');
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      const cw = rect.width;
+      const ch = rect.height;
+
+      // Background
+      ctx.fillStyle = '#070b12';
+      ctx.fillRect(0, 0, cw, ch);
+
+      if (blueprintImg && appState?.map?.has_blueprint) {
+        ctx.globalAlpha = 0.78;
+        ctx.drawImage(blueprintImg, 0, 0, cw, ch);
+        ctx.globalAlpha = 1;
+      } else {
+        // Subtle architectural grid
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.28)';
+        ctx.lineWidth = 1;
+        const step = 28;
+        for (let x = step; x < cw; x += step) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke();
+        }
+        for (let y = step; y < ch; y += step) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke();
+        }
+        // DORI concentric radar rings
+        const cx = cw / 2, cy = ch / 2;
+        const maxR = Math.min(cw, ch) * 0.44;
+        const rings = [0.3, 0.55, 0.8, 1.0];
+        ctx.strokeStyle = 'rgba(16, 185, 129, 0.16)';
+        ctx.setLineDash([4, 4]);
+        for (const f of rings) {
+          ctx.beginPath(); ctx.arc(cx, cy, maxR * f, 0, Math.PI * 2); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+
+      if (!appState) { ctx.restore(); return; }
+
+      const positions = appState.map.node_positions || [];
+      const angles = appState.map.node_angles || [];
+      const showFov = appState.map.show_fov_cones;
+      const fovSpan = (appState.map.fov_span_deg || 75) * Math.PI / 180;
+      const slots = appState.slots || [];
+      const lk = appState.tracker?.last_known || {};
+      const activeCamId = lk.camera_id;
+      const route = appState.tracker?.journey_route || [];
+
+      const pts = positions.map(([u, v]) => [u * cw, v * ch]);
+
+      // Journey Route Path
+      if (route.length >= 2) {
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        route.forEach((step, idx) => {
+          const cid = step.camera_id;
+          if (!pts[cid]) return;
+          const [px, py] = pts[cid];
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // FOV Cones
+      if (showFov) {
+        const coneR = Math.min(cw, ch) * 0.30;
+        for (let i = 0; i < 4; i++) {
+          if (!pts[i] || !slots[i]) continue;
+          const [px, py] = pts[i];
+          const rad = (angles[i] || 0) * Math.PI / 180;
+          const isSpotted = slots[i].spotted;
+          const isEnabled = slots[i].enabled;
+
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.arc(px, py, coneR, rad - fovSpan / 2, rad + fovSpan / 2);
+          ctx.closePath();
+
+          if (isSpotted) {
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.28)';
+            ctx.strokeStyle = 'rgba(52, 211, 153, 0.8)';
+          } else if (isEnabled) {
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.16)';
+            ctx.strokeStyle = 'rgba(96, 165, 250, 0.45)';
+          } else {
+            ctx.fillStyle = 'rgba(100, 116, 139, 0.08)';
+            ctx.strokeStyle = 'rgba(100, 116, 139, 0.25)';
+          }
+          ctx.lineWidth = 1;
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      // Camera Pins + Aim Dots
+      radarAnimPhase = (radarAnimPhase + 0.09) % (Math.PI * 2);
+      for (let i = 0; i < 4; i++) {
+        if (!pts[i] || !slots[i]) continue;
+        const [px, py] = pts[i];
+        const rad = (angles[i] || 0) * Math.PI / 180;
+        const isSpotted = slots[i].spotted;
+        const isLast = activeCamId === i;
+        const isEnabled = slots[i].enabled;
+
+        // Animated radar pulse for active / spotted camera
+        if (isSpotted || isLast) {
+          const pulseR = 14 + Math.sin(radarAnimPhase) * 7 + 7;
+          ctx.beginPath();
+          ctx.arc(px, py, pulseR, 0, Math.PI * 2);
+          ctx.strokeStyle = isSpotted ? 'rgba(16, 185, 129, 0.75)' : 'rgba(56, 189, 248, 0.55)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // Aim handle dot (outer ring 22px away)
+        const ax = px + Math.cos(rad) * 22;
+        const ay = py + Math.sin(rad) * 22;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(ax, ay);
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(ax, ay, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fill();
+
+        // Main node circle
+        ctx.beginPath();
+        ctx.arc(px, py, 12, 0, Math.PI * 2);
+        ctx.fillStyle = isSpotted ? '#059669' : (isLast ? '#1d4ed8' : (isEnabled ? '#1e293b' : '#0f172a'));
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = isSpotted ? '#34d399' : (isEnabled ? '#60a5fa' : '#475569');
+        ctx.stroke();
+
+        // Cam Label
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 10px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`C${i + 1}`, px, py + 0.5);
+
+        // Location sublabel
+        const loc = (slots[i].location || '').slice(0, 14);
+        if (loc) {
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = '600 9px system-ui, sans-serif';
+          ctx.fillText(loc, px, py + 19);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    // Interactive Pointer Dragging on Radar Canvas
+    (function setupRadarPointer() {
+      const canvas = document.getElementById('radarCanvas');
+      function getCanvasUV(ev) {
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+        const y = Math.max(0, Math.min(rect.height, ev.clientY - rect.top));
+        return { x, y, w: rect.width, h: rect.height };
+      }
+
+      canvas.addEventListener('pointerdown', (ev) => {
+        if (!appState?.map?.node_positions) return;
+        const { x, y, w, h } = getCanvasUV(ev);
+        const pos = appState.map.node_positions;
+        const ang = appState.map.node_angles;
+
+        // First check aim dots
+        for (let i = 0; i < 4; i++) {
+          const px = pos[i][0] * w;
+          const py = pos[i][1] * h;
+          const rad = (ang[i] || 0) * Math.PI / 180;
+          const ax = px + Math.cos(rad) * 22;
+          const ay = py + Math.sin(rad) * 22;
+          if (Math.hypot(x - ax, y - ay) < 12) {
+            dragInfo = { camIdx: i, mode: 'angle' };
+            canvas.setPointerCapture(ev.pointerId);
+            return;
+          }
+        }
+        // Then check pin centers
+        for (let i = 0; i < 4; i++) {
+          const px = pos[i][0] * w;
+          const py = pos[i][1] * h;
+          if (Math.hypot(x - px, y - py) < 18) {
+            dragInfo = { camIdx: i, mode: 'move' };
+            canvas.setPointerCapture(ev.pointerId);
+            return;
+          }
+        }
+      });
+
+      canvas.addEventListener('pointermove', (ev) => {
+        if (!dragInfo || !appState) return;
+        const { x, y, w, h } = getCanvasUV(ev);
+        const i = dragInfo.camIdx;
+        if (dragInfo.mode === 'move') {
+          const u = Math.max(0.05, Math.min(0.95, x / w));
+          const v = Math.max(0.05, Math.min(0.95, y / h));
+          appState.map.node_positions[i] = [u, v];
+        } else {
+          const px = appState.map.node_positions[i][0] * w;
+          const py = appState.map.node_positions[i][1] * h;
+          const deg = Math.round((Math.atan2(y - py, x - px) * 180 / Math.PI + 360) % 360);
+          appState.map.node_angles[i] = deg;
+        }
+        drawRadarMap();
+      });
+
+      async function finishDrag(ev) {
+        if (!dragInfo || !appState) return;
+        const i = dragInfo.camIdx;
+        const payload = dragInfo.mode === 'move'
+          ? { cam_idx: i, u: appState.map.node_positions[i][0], v: appState.map.node_positions[i][1] }
+          : { cam_idx: i, angle: appState.map.node_angles[i] };
+        dragInfo = null;
+        try { canvas.releasePointerCapture(ev.pointerId); } catch {}
+        try {
+          await apiJson('/api/map/config', { method: 'POST', body: JSON.stringify(payload) });
+        } catch (e) { showToast(e.message, 'err'); }
+      }
+      canvas.addEventListener('pointerup', finishDrag);
+      canvas.addEventListener('pointercancel', finishDrag);
+    })();
+
+    // ── State Polling & UI Hydration (Focus-Guarded!) ────────────────
+    async function fetchState() {
+      try {
+        const res = await fetch('/api/state', { cache: 'no-store' });
+        if (!res.ok) return;
+        const st = await res.json();
+        const prevRunning = appState?.is_running;
+        appState = st;
+        hydrateUI(st);
+        if (prevRunning !== st.is_running) {
+          updateFeedStreams(true);
+        }
+      } catch {
+        // Ignore transient disconnect
+      }
+    }
+
+    function hydrateUI(st) {
+      // Status pill
+      const pill = document.getElementById('statusPill');
+      pill.className = `status-pill ${st.status_level || 'dim'}`;
+      document.getElementById('statusText').textContent = st.status_text || 'Idle';
+
+      // Telemetry
+      document.getElementById('clockDisplay').textContent = st.clock_str || '00:00:00';
+      document.getElementById('actualSpeed').textContent = st.telemetry?.actual_speed_str || '1.0x';
+      document.getElementById('etaDisplay').textContent = st.telemetry?.eta_str || '--:--';
+      document.getElementById('deviceLabel').textContent = st.telemetry?.device || 'CPU';
+
+      // Playback buttons
+      const startLabel = st.is_running ? (st.is_paused ? '▶ Resume' : '⏸ Pause') : '▶ Start';
+      const sideStartLabel = st.is_running ? (st.is_paused ? '▶ Resume' : '⏸ Pause') : '▶ Start Scan';
+      for (const id of ['topStartBtn', 'mobStartBtn']) {
+        const b = document.getElementById(id);
+        b.textContent = startLabel;
+        b.className = b.className.replace(/btn-primary|btn-amber/g, st.is_running && !st.is_paused ? 'btn-amber' : 'btn-primary');
+      }
+      const sb = document.getElementById('sideStartBtn');
+      sb.textContent = sideStartLabel;
+      sb.className = st.is_running && !st.is_paused ? 'btn-amber' : 'btn-primary';
+
+      for (const id of ['topStopBtn', 'sideStopBtn', 'mobStopBtn']) {
+        document.getElementById(id).disabled = !st.is_running;
+      }
+
+      // Global Speed Pills
+      const gSpeed = st.config?.global_speed || '10x';
+      document.querySelectorAll('.speed-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.speed === gSpeed);
+      });
+
+      // Mode & Sensitivity
+      const isPerson = st.config?.tracking_mode !== 'class';
+      document.getElementById('modePersonBtn').classList.toggle('active', isPerson);
+      document.getElementById('modeClassBtn').classList.toggle('active', !isPerson);
+      document.getElementById('personCard').style.display = isPerson ? 'flex' : 'none';
+      document.getElementById('classCard').style.display = isPerson ? 'none' : 'flex';
+
+      const tInput = document.getElementById('targetNameInput');
+      if (document.activeElement !== tInput && st.config?.target_name) {
+        tInput.value = st.config.target_name;
+      }
+      const cInput = document.getElementById('classNameInput');
+      if (document.activeElement !== cInput && st.config?.class_name) {
+        cInput.value = st.config.class_name;
+      }
+      document.querySelectorAll('.class-chip').forEach(ch => {
+        ch.classList.toggle('active', ch.textContent.toLowerCase() === (st.config?.class_name || '').toLowerCase());
+      });
+
+      const sens = st.config?.sensitivity || 'balanced';
+      document.getElementById('sensStrictBtn').classList.toggle('active-green', sens === 'strict');
+      document.getElementById('sensBalancedBtn').classList.toggle('active-green', sens === 'balanced');
+      document.getElementById('sensFlexibleBtn').classList.toggle('active-green', sens === 'flexible');
+
+      // Target Photo Gallery
+      const strip = document.getElementById('galleryStrip');
+      const gal = st.gallery || [];
+      if (gal.length === 0) {
+        if (strip.dataset.sig !== 'empty') {
+          strip.dataset.sig = 'empty';
+          strip.innerHTML = '<div class="gallery-empty">Upload 1–8 clear photos or a 360° reference clip</div>';
+        }
+      } else {
+        const sig = gal.map(g => `${g.index}:${g.angle_label}:${g.has_face}`).join('|');
+        if (strip.dataset.sig !== sig) {
+          strip.dataset.sig = sig;
+          strip.innerHTML = gal.map(g => `
+            <div class="gallery-item" title="Angle: ${g.angle_label}">
+              <img src="data:image/jpeg;base64,${g.thumb_b64}" alt="Profile ${g.angle_label}" />
+              ${g.has_face ? '<span class="gallery-face" title="Face vector extracted">✓</span>' : ''}
+              <span class="gallery-badge">${g.angle_label || 'VIEW'}</span>
+            </div>
+          `).join('');
+        }
+      }
+
+      // Slots & Center Feeds
+      buildSlotCards();
+      (st.slots || []).forEach((s, i) => {
+        const d = slotCardDOM[i];
+        d.card.classList.toggle('enabled', !!s.enabled);
+        d.card.classList.toggle('spotted', !!s.spotted);
+        if (document.activeElement !== d.enabled) d.enabled.checked = !!s.enabled;
+        if (document.activeElement !== d.source) d.source.value = s.source || '';
+        if (document.activeElement !== d.location) d.location.value = s.location || '';
+        if (document.activeElement !== d.speed) d.speed.value = s.speed || '10x';
+        d.bar.style.width = `${Math.round(s.progress_pct || 0)}%`;
+        d.progTxt.textContent = s.progress_str || `${Math.round(s.progress_pct || 0)}%`;
+
+        if (s.spotted) {
+          d.badge.className = 'badge badge-spotted';
+          d.badge.textContent = 'SPOTTED';
+          d.badge.style.display = 'inline-block';
+        } else if (s.ended) {
+          d.badge.className = 'badge badge-ended';
+          d.badge.textContent = 'ENDED';
+          d.badge.style.display = 'inline-block';
+        } else {
+          d.badge.style.display = 'none';
+        }
+
+        // Feed Card metadata
+        document.getElementById(`feedLabel${i}`).textContent = `CAM ${i + 1} · ${s.location}`;
+        document.getElementById(`feedCard${i}`).classList.toggle('spotted', !!s.spotted);
+        document.getElementById(`feedProg${i}`).textContent = s.progress_str || `${Math.round(s.progress_pct || 0)}%`;
+        document.getElementById(`feedSpd${i}`).textContent = s.speed || '10x';
+
+        const fBadge = document.getElementById(`feedBadge${i}`);
+        if (s.spotted) {
+          fBadge.className = 'badge badge-spotted';
+          fBadge.textContent = 'SPOTTED';
+          fBadge.style.display = 'inline-block';
+        } else if (st.is_running && s.enabled && !s.is_file) {
+          fBadge.className = 'badge badge-live';
+          fBadge.textContent = 'LIVE';
+          fBadge.style.display = 'inline-block';
+        } else {
+          fBadge.style.display = 'none';
+        }
+      });
+
+      // Last Known Alert Banner
+      const tr = st.tracker || {};
+      const lk = tr.last_known || {};
+      const banner = document.getElementById('alertBanner');
+      const head = document.getElementById('alertHeadline');
+      const sub = document.getElementById('alertSub');
+      const thumb = document.getElementById('alertThumb');
+
+      if (lk.camera) {
+        banner.className = tr.is_lost ? 'alert-banner lost' : 'alert-banner';
+        const prefix = tr.is_lost ? `⚠️ TARGET LOST (${tr.seconds_since_last}s ago)` : '📍 ACTIVE LOCATION';
+        const camStr = lk.is_overlap && lk.overlap_cameras?.length
+          ? lk.overlap_cameras.join(' + ')
+          : lk.camera;
+        head.textContent = `${prefix}: ${camStr}`;
+        sub.textContent = `Video ${lk.video_time || '--:--'} · Real ${lk.timestamp || '--'} · Confidence ${Math.round((lk.confidence || 0) * 100)}%`;
+        if (lk.snapshot_path) {
+          const snapUrl = `/api/snapshot?path=${encodeURIComponent(lk.snapshot_path)}`;
+          if (thumb.dataset.path !== lk.snapshot_path) {
+            thumb.dataset.path = lk.snapshot_path;
+            thumb.src = snapUrl;
+          }
+          thumb.style.display = 'block';
+        }
+      } else {
+        banner.className = 'alert-banner idle';
+        head.textContent = st.is_running ? 'Scanning active cameras for target...' : 'Ready — configure target & cameras, then press Start';
+        sub.textContent = st.is_running ? `Universal Clock ${st.clock_str} · ${st.progress?.summary || ''}` : 'Supports local files, webcam, mobile camera IP URLs, and 360° ReID';
+        thumb.style.display = 'none';
+      }
+
+      // Blueprint refresh if changed on backend
+      if (st.map?.has_blueprint && !lastBlueprintFlag) {
+        lastBlueprintFlag = true;
+        loadBlueprintImage();
+      } else if (!st.map?.has_blueprint) {
+        lastBlueprintFlag = false;
+        blueprintImg = null;
+      }
+
+      // Route & Timeline
+      document.getElementById('sightingCount').textContent = String(tr.total_sightings || 0);
+      document.getElementById('routeArrowBox').textContent = tr.route_arrow || 'Awaiting first target sighting...';
+      document.getElementById('fovToggleBtn').style.opacity = st.map?.show_fov_cones ? '1' : '0.5';
+
+      const tlEl = document.getElementById('timelineList');
+      const items = tr.timeline || [];
+      if (items.length === 0) {
+        if (tlEl.dataset.sig !== 'empty') {
+          tlEl.dataset.sig = 'empty';
+          tlEl.innerHTML = '<div style="font-size:11px; color:var(--text-dim); text-align:center; padding:12px;">No detections logged yet</div>';
+        }
+      } else {
+        const sig = items.map(x => `${x.index}:${x.dwell_str}:${x.type}`).join('|');
+        if (tlEl.dataset.sig !== sig) {
+          tlEl.dataset.sig = sig;
+          tlEl.innerHTML = [...items].reverse().map(x => {
+            const snapUrl = x.snapshot_path ? `/api/snapshot?path=${encodeURIComponent(x.snapshot_path)}` : '';
+            const moveText = x.from_camera ? `${x.from_camera} → ${x.camera}` : x.camera;
+            const titleText = `${x.type || 'SIGHTING'} · ${moveText}`;
+            const safeTitle = titleText.replace(/'/g, '&#39;');
+            return `
+              <div class="tl-item ${x.type || ''}">
+                ${snapUrl ? `<img class="tl-thumb" src="${snapUrl}" alt="Sighting" onclick="openLightbox('${snapUrl}', '${safeTitle}')" />` : ''}
+                <div class="tl-body">
+                  <div class="tl-title">
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${moveText}</span>
+                    <span class="tabular" style="font-size:10px; color:#34d399;">${Math.round((x.confidence || 0) * 100)}%</span>
+                  </div>
+                  <div class="tl-meta">
+                    <span>${x.type}</span> · <span class="tabular">${x.entry_time || x.video_time}</span>
+                    ${x.dwell_str ? ` · Stay <strong>${x.dwell_str}</strong>` : ''}
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      if (!dragInfo) drawRadarMap();
+    }
+
+    // ── Boot ─────────────────────────────────────────────────────────
+    buildSlotCards();
+    fetchState();
+    pollTimer = setInterval(fetchState, 400);
+    snapTimer = setInterval(pollSnapshotFrames, 450);
+    window.addEventListener('resize', () => drawRadarMap());
+  </script>
+</body>
+</html>

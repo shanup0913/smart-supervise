@@ -10,3 +10,4 @@ reports/
 venv/
 .env
 runs/
+uploads/

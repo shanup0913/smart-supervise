@@ -19,8 +19,13 @@ Key Capabilities:
 import os
 import json
 import math
-import tkinter as tk
-from PIL import Image, ImageTk
+from PIL import Image
+try:
+    import tkinter as tk
+    from PIL import ImageTk
+except ImportError:
+    tk = None
+    ImageTk = None
 
 DEFAULT_NODE_POSITIONS = [
     (0.22, 0.28),  # Camera 1 (North Entrance / Gate)

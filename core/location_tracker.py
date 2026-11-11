@@ -451,7 +451,8 @@ class LocationTracker:
             with open(filepath, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(
                     f,
-                    fieldnames=["index", "type", "camera", "camera_id", "from_camera", "entry_time", "last_seen_time", "dwell_str", "video_time", "timestamp", "confidence", "snapshot_path"]
+                    fieldnames=["index", "type", "camera", "camera_id", "from_camera", "entry_time", "last_seen_time", "dwell_str", "video_time", "timestamp", "confidence", "is_overlap", "overlap_cameras", "snapshot_path"],
+                    extrasaction="ignore",
                 )
                 writer.writeheader()
                 for entry in self.timeline:

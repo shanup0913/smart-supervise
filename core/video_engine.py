@@ -389,9 +389,12 @@ class VideoEngine:
         self.is_paused = False
         self.current_speed = "10x"
         self.worker_thread = None
+        self.realtime_thread = None
         self.live_ai_thread = None
         self.has_live_slots = False
         self.has_file_slots = False
+        self.has_realtime_file_slots = False
+        self.has_fast_file_slots = False
         self._on_finished_callback = None
         self._lock = threading.RLock()
 
@@ -406,13 +409,20 @@ class VideoEngine:
 
         self.has_cuda = torch.cuda.is_available()
 
-        # True Speed Table: (step_frames, sleep_time)
+        # Target speed multipliers & min step frame budgets
+        self.speed_multipliers = {
+            "1x": 1.0,
+            "5x": 5.0,
+            "10x": 10.0,
+            "20x": 20.0,
+            "40x": 40.0,
+        }
         self.speed_map = {
-            "1x":  (1, 0.030),    # Smooth 1x playback (~30 FPS)
-            "5x":  (45, 0.005),   # 1.5s jump -> ~5x true speed
-            "10x": (105, 0.002),  # 3.5s jump -> ~10x true speed (~4 min / 40 min video)
-            "20x": (210, 0.001),  # 7.0s jump -> ~20x true speed (~2 min / 40 min video)
-            "40x": (420, 0.001)   # 14.0s jump -> ~40x true speed (~1 min / 40 min video)
+            "1x":  (1, 0.030),
+            "5x":  (45, 0.005),
+            "10x": (105, 0.002),
+            "20x": (210, 0.001),
+            "40x": (420, 0.001)
         }
 
         # 4 Camera State Slots
@@ -445,6 +455,11 @@ class VideoEngine:
                 "total_frames": 0,
                 "duration_sec": 0.0,
                 "current_frame_pos": 0,
+                "cap_next_pos": 0,
+                "_rt_base_time": 0.0,
+                "_rt_base_frame": 0,
+                "_raw_seq": 0,
+                "_latest_raw_frame": None,
                 "is_file": False,
                 "ended": False,
                 "last_gray_thumb": None
@@ -475,6 +490,11 @@ class VideoEngine:
         slot["ended"] = False
         slot["last_gray_thumb"] = None
         slot["current_frame_pos"] = 0
+        slot["cap_next_pos"] = 0
+        slot["_rt_base_time"] = time.time()
+        slot["_rt_base_frame"] = 0
+        slot["_raw_seq"] = 0
+        slot["_latest_raw_frame"] = None
         slot["current_frame"] = None
         slot["frame_seq"] = slot.get("frame_seq", 0) + 1
         slot["last_display_seq"] = -1
@@ -483,11 +503,17 @@ class VideoEngine:
         slot["cached_detections"] = []
         slot["cached_spotted"] = False
 
+    def _effective_slot_speed(self, slot):
+        return (slot["speed"] or self.current_speed).strip()
+
     def _refresh_active_flags_locked(self):
-        self.has_file_slots = any(
-            s["enabled"] and s["is_file"] and s.get("cap") is not None and not s.get("ended", False)
-            for s in self.slots
-        )
+        active_files = [
+            s for s in self.slots
+            if s["enabled"] and s["is_file"] and s.get("cap") is not None and not s.get("ended", False)
+        ]
+        self.has_file_slots = len(active_files) > 0
+        self.has_realtime_file_slots = any(self._effective_slot_speed(s) == "1x" for s in active_files)
+        self.has_fast_file_slots = any(self._effective_slot_speed(s) != "1x" for s in active_files)
         self.has_live_slots = any(
             s["enabled"] and not s["is_file"] and s.get("reader") is not None
             for s in self.slots
@@ -497,16 +523,37 @@ class VideoEngine:
             default=0.0,
         )
 
+    def _fast_owns_clock_locked(self):
+        return self.has_fast_file_slots and self.current_speed != "1x"
+
+    def _reanchor_realtime_slots_locked(self, now=None):
+        now = time.time() if now is None else now
+        for s in self.slots:
+            s["_rt_base_time"] = now
+            s["_rt_base_frame"] = s["current_frame_pos"]
+
     def _ensure_loops_running(self):
         if not self.is_running:
             return
-        if self.has_live_slots and (self.live_ai_thread is None or not self.live_ai_thread.is_alive()):
+        if (self.has_live_slots or self.has_realtime_file_slots) and (
+            self.live_ai_thread is None or not self.live_ai_thread.is_alive()
+        ):
             self.live_ai_thread = threading.Thread(
                 target=self._live_ai_loop,
                 daemon=True,
             )
             self.live_ai_thread.start()
-        if self.has_file_slots and (self.worker_thread is None or not self.worker_thread.is_alive()):
+        if self.has_realtime_file_slots and (
+            self.realtime_thread is None or not self.realtime_thread.is_alive()
+        ):
+            self.realtime_thread = threading.Thread(
+                target=self._realtime_file_loop,
+                daemon=True,
+            )
+            self.realtime_thread.start()
+        if self.has_fast_file_slots and (
+            self.worker_thread is None or not self.worker_thread.is_alive()
+        ):
             self.worker_thread = threading.Thread(
                 target=self._parallel_scan_loop,
                 args=(self._on_finished_callback,),
@@ -619,22 +666,29 @@ class VideoEngine:
             raise ValueError("Please enable at least one Camera slot!")
 
         with self._lock:
-            self._refresh_active_flags_locked()
+            now = time.time()
+            self.current_speed = str(global_speed).strip()
             self.is_running = True
             self.is_paused = False
-            self.current_speed = str(global_speed).strip()
             self.global_clock_sec = 0.0
             self.start_clock_sec = 0.0
-            self.start_real_time = time.time()
+            self.start_real_time = now
             self.actual_speed_multiplier = 1.0
             self.current_steps_per_sec = 0.0
+            self._reanchor_realtime_slots_locked(now)
+            self._refresh_active_flags_locked()
 
         self._ensure_loops_running()
         return active_count
 
     def _sync_live_clock_locked(self):
-        """Advances global_clock_sec from wall clock when running pure live streams."""
-        if self.is_running and not self.is_paused and self.has_live_slots and not self.has_file_slots:
+        """Advances global_clock_sec from wall clock when running at 1x (live or 1x file playback)."""
+        if (
+            self.is_running
+            and not self.is_paused
+            and not self._fast_owns_clock_locked()
+            and (self.has_live_slots or self.has_realtime_file_slots)
+        ):
             self.global_clock_sec = self.start_clock_sec + max(0.0, time.time() - self.start_real_time)
 
     def toggle_pause(self):
@@ -644,8 +698,10 @@ class VideoEngine:
                 self._sync_live_clock_locked()
             self.is_paused = not self.is_paused
             if not self.is_paused:
-                self.start_real_time = time.time()
+                now = time.time()
+                self.start_real_time = now
                 self.start_clock_sec = self.global_clock_sec
+                self._reanchor_realtime_slots_locked(now)
             return self.is_paused
 
     def pause(self):
@@ -656,20 +712,29 @@ class VideoEngine:
 
     def resume(self):
         with self._lock:
+            now = time.time()
             self.is_paused = False
-            self.start_real_time = time.time()
+            self.start_real_time = now
             self.start_clock_sec = self.global_clock_sec
+            self._reanchor_realtime_slots_locked(now)
 
     def set_global_speed(self, new_speed):
         """Dynamically adjusts search speed mid-playback without restarting feeds."""
         with self._lock:
+            self._sync_live_clock_locked()
+            now = time.time()
             self.current_speed = str(new_speed).strip()
-            self.start_real_time = time.time()
+            self.start_real_time = now
             self.start_clock_sec = self.global_clock_sec
             for slot in self.slots:
                 if slot["is_file"] or not self.is_running:
                     if not (self.is_running and not slot["is_file"]):
                         slot["speed"] = self.current_speed
+            self._reanchor_realtime_slots_locked(now)
+            self._refresh_active_flags_locked()
+            running = self.is_running
+        if running:
+            self._ensure_loops_running()
 
     def set_slot_speed(self, idx, new_speed):
         """Dynamically adjusts one camera's speed; live streams stay locked at 1x."""
@@ -682,8 +747,18 @@ class VideoEngine:
             if is_live and spd != "1x":
                 slot["speed"] = "1x"
                 return False, "1x"
+            self._sync_live_clock_locked()
+            now = time.time()
             slot["speed"] = spd
-            return True, spd
+            slot["_rt_base_time"] = now
+            slot["_rt_base_frame"] = slot["current_frame_pos"]
+            self.start_real_time = now
+            self.start_clock_sec = self.global_clock_sec
+            self._refresh_active_flags_locked()
+            running = self.is_running
+        if running:
+            self._ensure_loops_running()
+        return True, spd
 
     def set_slot_location(self, idx, location):
         """Updates a camera slot's display/tracker location name live."""
@@ -775,20 +850,17 @@ class VideoEngine:
         self.is_paused = False
         self.has_live_slots = False
         self.has_file_slots = False
+        self.has_realtime_file_slots = False
+        self.has_fast_file_slots = False
 
-        if self.worker_thread is not None and self.worker_thread.is_alive():
-            try:
-                self.worker_thread.join(timeout=1.5)
-            except Exception:
-                pass
-            self.worker_thread = None
-
-        if self.live_ai_thread is not None and self.live_ai_thread.is_alive():
-            try:
-                self.live_ai_thread.join(timeout=1.5)
-            except Exception:
-                pass
-            self.live_ai_thread = None
+        for attr in ("worker_thread", "realtime_thread", "live_ai_thread"):
+            th = getattr(self, attr, None)
+            if th is not None and th.is_alive():
+                try:
+                    th.join(timeout=1.5)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
 
         for slot in self.slots:
             self._close_slot_media(slot)
@@ -820,8 +892,9 @@ class VideoEngine:
                     cur_sec = int(self.global_clock_sec)
                     cam_time_str = f"{cur_sec // 3600:02d}:{(cur_sec % 3600) // 60:02d}:{cur_sec % 60:02d}"
             if need_draw:
+                preview_raw = _cap_height_480(raw_frame)
                 annotated = self.scanner.draw_overlays(
-                    raw_frame,
+                    preview_raw,
                     cached_dets,
                     cached_spotted,
                     camera_name=loc_name,
@@ -923,7 +996,7 @@ class VideoEngine:
         if pure_live:
             actual_speed = 1.0
             self.actual_speed_multiplier = 1.0
-        elif real_elapsed < 0.5:
+        elif real_elapsed < 0.25:
             actual_speed = self.actual_speed_multiplier
         else:
             actual_speed = (clock_val - start_clock) / real_elapsed
@@ -957,108 +1030,243 @@ class VideoEngine:
             "progress_str": progress_summary
         }
 
-    def _process_camera_slot(self, slot, global_speed, global_time_str, cur_sec):
-        """Processes a single camera stream (Runs inside parallel ThreadPool worker)."""
+    @staticmethod
+    def _format_hms(sec_float):
+        cur_sec = max(0, int(sec_float))
+        return f"{cur_sec // 3600:02d}:{(cur_sec % 3600) // 60:02d}:{cur_sec % 60:02d}"
+
+    @staticmethod
+    def _read_slot_frame_at(slot, target_pos):
+        """
+        Reads target_pos using zero-seek sequential cap.read()/cap.grab() when advancing
+        by 1-4 frames, falling back to cap.set() only for larger fast-scan jumps.
+        Must be called under slot['op_lock'].
+        """
+        cap = slot.get("cap")
+        if cap is None or not cap.isOpened():
+            return False, None
+
+        next_pos = slot.get("cap_next_pos", -999999)
+        delta = target_pos - next_pos
+        if delta == 0:
+            ret, frame = cap.read()
+        elif 1 <= delta <= 4:
+            ok = True
+            for _ in range(delta):
+                if not cap.grab():
+                    ok = False
+                    break
+            ret, frame = cap.read() if ok else (False, None)
+        else:
+            try:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_pos)
+            except Exception:
+                pass
+            ret, frame = cap.read()
+
+        if ret and frame is not None:
+            slot["cap_next_pos"] = target_pos + 1
+            slot["current_frame_pos"] = target_pos
+        return ret, frame
+
+    @staticmethod
+    def _should_run_motion_ai(slot, frame, min_pixels=30, heartbeat_sec=1.5):
+        """Lightweight motion gate with periodic heartbeat so still targets are still verified."""
+        now = time.time()
+        should_run = True
         try:
-            with slot["op_lock"]:
-                cap = slot["cap"]
-                if cap is None or not cap.isOpened() or not slot["enabled"] or not self.is_running:
-                    return None
-
-                # Camera-specific playback speed
-                cam_spd = slot["speed"] or global_speed
-                cam_step_frames, _ = self.speed_map.get(cam_spd, (105, 0.002))
-                is_fast = cam_spd in ["5x", "10x", "20x", "40x"]
-
-                if slot["is_file"]:
-                    slot["current_frame_pos"] += cam_step_frames
-                    if slot["total_frames"] > 0 and slot["current_frame_pos"] >= slot["total_frames"]:
-                        slot["ended"] = True
-                        return {"id": slot["id"], "ended": True}
-                    else:
-                        try:
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, slot["current_frame_pos"])
-                        except Exception:
-                            pass
-
-                    cam_sec = int(slot["current_frame_pos"] / max(1.0, slot["fps"]))
-                    ch = cam_sec // 3600
-                    cm_ = (cam_sec % 3600) // 60
-                    cs = cam_sec % 60
-                    cam_time_str = f"{ch:02d}:{cm_:02d}:{cs:02d}"
-                else:
-                    cam_time_str = global_time_str
-
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    return {"id": slot["id"], "ended": slot["is_file"]}
-
-            # Bail early if this slot was removed while reading
-            if not slot["enabled"] or not self.is_running:
-                return None
-
-            loc_name = slot["location"].strip() or f"Camera {slot['id']+1}"
-
-            # Smart Motion Gating (0.18ms Check)
-            should_run_ai = True
-            if is_fast and slot["is_file"]:
-                try:
-                    small_gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 90), interpolation=cv2.INTER_NEAREST)
-                    last_thumb = slot.get("last_gray_thumb")
-                    if last_thumb is not None:
-                        diff = cv2.absdiff(small_gray, last_thumb)
-                        motion_pixels = int(np.count_nonzero(diff > 22))
-                        if motion_pixels < 35 and not slot["spotted"] and (cur_sec % 4 != 0):
-                            should_run_ai = False
-                    slot["last_gray_thumb"] = small_gray
-                except Exception:
-                    pass
-
-            if not should_run_ai:
-                # Pre-downscale preview frame in background worker to save GUI thread CPU
-                preview = _cap_height_480(frame)
-                if preview is frame:
-                    preview = frame.copy()
-                with self._lock:
-                    slot["spotted"] = False
-                    slot["current_frame"] = preview
-                    slot["frame_seq"] = slot.get("frame_seq", 0) + 1
-                return {"id": slot["id"], "spotted": False, "ended": False}
-
-            # Run AI Scanner on current frame (High speed inference)
-            annotated_frame, spotted, match_info = self.scanner.process_frame(
-                frame, camera_name=loc_name, video_time_str=cam_time_str, fast_mode=is_fast
+            small_gray = cv2.resize(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
+                (160, 90),
+                interpolation=cv2.INTER_NEAREST,
             )
-
-            raw_out = annotated_frame if annotated_frame is not None else frame
-            out_frame = _cap_height_480(raw_out)
-            if out_frame is raw_out:
-                out_frame = raw_out.copy()
-
-            with self._lock:
-                slot["spotted"] = spotted
-                slot["current_frame"] = out_frame
-                slot["frame_seq"] = slot.get("frame_seq", 0) + 1
-
-            if spotted and match_info:
-                self.last_spotlight_idx = slot["id"]
-                self.tracker.log_sighting(
-                    camera_name=loc_name,
-                    confidence=match_info.get("confidence", 0.8),
-                    snapshot_path=match_info.get("snapshot_path", ""),
-                    video_time=cam_time_str,
-                    camera_id=slot["id"]
-                )
-
-            return {"id": slot["id"], "spotted": spotted, "ended": False}
+            last_thumb = slot.get("last_gray_thumb")
+            if last_thumb is not None:
+                diff = cv2.absdiff(small_gray, last_thumb)
+                motion_pixels = int(np.count_nonzero(diff > 22))
+                if (
+                    motion_pixels < min_pixels
+                    and not slot.get("spotted", False)
+                    and (now - slot.get("last_ai_time", 0.0)) < heartbeat_sec
+                ):
+                    should_run = False
+            slot["last_gray_thumb"] = small_gray
         except Exception:
-            return {"id": slot["id"], "spotted": False, "ended": False}
+            pass
+        return should_run
+
+    def _record_slot_sighting(self, slot, loc_name, cam_time_str, match_info):
+        self.last_spotlight_idx = slot["id"]
+        self.tracker.log_sighting(
+            camera_name=loc_name,
+            confidence=match_info.get("confidence", 0.8),
+            snapshot_path=match_info.get("snapshot_path", ""),
+            video_time=cam_time_str,
+            camera_id=slot["id"],
+        )
+
+    def _check_and_finish_if_all_ended(self):
+        """Stops the engine and fires on_finished_callback only once all live and file feeds finish."""
+        callback = None
+        with self._lock:
+            if not self.is_running:
+                return
+            self._refresh_active_flags_locked()
+            if self.has_live_slots or self.has_file_slots:
+                self.start_clock_sec = self.global_clock_sec
+                self.start_real_time = time.time()
+                return
+            self.is_running = False
+            if self.max_video_duration > 0:
+                self.global_clock_sec = min(self.max_video_duration, self.global_clock_sec)
+            callback = self._on_finished_callback
+        if callback:
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def _realtime_file_loop(self):
+        """
+        True 1.0x Wall-Clock File Playback Loop:
+        Reads 1x video files sequentially without cap.set() seek overhead and decouples
+        30 FPS preview rendering from async batched AI so CPU never slows 1x down to 0.4x.
+        """
+        step_counter = 0
+        rate_timer = time.time()
+
+        while self.is_running:
+            try:
+                if self.is_paused:
+                    time.sleep(0.04)
+                    continue
+
+                with self._lock:
+                    cur_speed = self.current_speed
+                    rt_slots = [
+                        s for s in self.slots
+                        if s["enabled"]
+                        and s["is_file"]
+                        and s.get("cap") is not None
+                        and not s.get("ended", False)
+                        and (s["speed"] or cur_speed) == "1x"
+                    ]
+
+                if not rt_slots:
+                    self._check_and_finish_if_all_ended()
+                    with self._lock:
+                        if not (
+                            self.is_running
+                            and any(
+                                s["enabled"] and s["is_file"] and s.get("cap") is not None
+                                and not s.get("ended", False)
+                                and (s["speed"] or self.current_speed) == "1x"
+                                for s in self.slots
+                            )
+                        ):
+                            break
+                    continue
+
+                now = time.time()
+                min_wait = 0.020
+                did_step = False
+
+                for slot in rt_slots:
+                    if not self.is_running or self.is_paused:
+                        break
+                    with slot["op_lock"]:
+                        if not slot["enabled"] or not slot["is_file"] or slot.get("ended", False):
+                            continue
+                        fps = max(1.0, slot["fps"])
+                        first_frame = (slot.get("_raw_seq", 0) == 0)
+                        if first_frame:
+                            slot["_rt_base_time"] = now
+                            slot["_rt_base_frame"] = slot["current_frame_pos"]
+                            target_pos = slot["current_frame_pos"]
+                        else:
+                            elapsed_rt = max(0.0, now - slot.get("_rt_base_time", now))
+                            target_pos = int(slot.get("_rt_base_frame", 0) + elapsed_rt * fps)
+
+                        tot = slot["total_frames"]
+                        if tot > 0 and target_pos >= tot:
+                            slot["ended"] = True
+                            continue
+
+                        if not first_frame and target_pos <= slot["current_frame_pos"]:
+                            # Calculate sleep until next frame boundary on this video
+                            next_frame_t = (
+                                slot.get("_rt_base_time", now)
+                                + ((slot["current_frame_pos"] + 1) - slot.get("_rt_base_frame", 0)) / fps
+                            )
+                            min_wait = min(min_wait, max(0.004, next_frame_t - now))
+                            continue
+
+                        ret, frame = self._read_slot_frame_at(slot, target_pos)
+                        if not ret or frame is None:
+                            slot["ended"] = True
+                            continue
+
+                    did_step = True
+                    with self._lock:
+                        cached_dets = list(slot["cached_detections"])
+                        cached_spotted = slot["cached_spotted"]
+                        loc_name = slot["location"].strip() or f"Camera {slot['id'] + 1}"
+                        cam_time_str = self._format_hms(target_pos / max(1.0, slot["fps"]))
+                        slot["_latest_raw_frame"] = frame
+                        slot["_raw_seq"] = slot.get("_raw_seq", 0) + 1
+
+                    preview = _cap_height_480(frame)
+                    annotated = self.scanner.draw_overlays(
+                        preview,
+                        cached_dets,
+                        cached_spotted,
+                        camera_name=loc_name,
+                        video_time_str=cam_time_str,
+                    )
+
+                    with self._lock:
+                        if slot["enabled"] and not slot["ended"]:
+                            slot["current_frame"] = annotated
+                            slot["spotted"] = cached_spotted
+                            slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+
+                if did_step:
+                    step_counter += 1
+                    with self._lock:
+                        self._sync_live_clock_locked()
+                else:
+                    with self._lock:
+                        self._sync_live_clock_locked()
+
+                elapsed_rate = time.time() - rate_timer
+                if elapsed_rate >= 1.0:
+                    with self._lock:
+                        if not self._fast_owns_clock_locked():
+                            self.current_steps_per_sec = step_counter / elapsed_rate
+                    step_counter = 0
+                    rate_timer = time.time()
+
+                # Check if any 1x slot just reached EOF
+                with self._lock:
+                    rem_rt = any(
+                        s["enabled"] and s["is_file"] and not s.get("ended", False)
+                        and (s["speed"] or self.current_speed) == "1x"
+                        for s in self.slots
+                    )
+                if not rem_rt:
+                    self._check_and_finish_if_all_ended()
+                    break
+
+                time.sleep(max(0.004, min(0.015, min_wait)))
+            except Exception:
+                if not self.is_running:
+                    break
+                time.sleep(0.01)
 
     def _live_ai_loop(self):
         """
-        Decoupled Live Stream AI Worker:
-        Runs 320px YOLOv8 + Motion Gating asynchronously on latest frames from _LiveStreamReader
-        without ever blocking network frame acquisition or 30 FPS display rendering.
+        Async Batched AI Worker for Live Streams & 1x Recorded Files:
+        Runs single-pass batched 320px YOLOv8 + Motion Gating without stalling 30 FPS display.
         """
         live_sweeps = 0
         rate_timer = time.time()
@@ -1071,109 +1279,145 @@ class VideoEngine:
 
                 with self._lock:
                     self._sync_live_clock_locked()
-                    cur_sec = int(self.global_clock_sec)
-                    live_slots = [
+                    global_hms = self._format_hms(self.global_clock_sec)
+                    cur_speed = self.current_speed
+                    async_slots = [
                         s for s in self.slots
-                        if s["enabled"] and not s["is_file"] and s.get("reader") is not None
+                        if s["enabled"] and (
+                            (not s["is_file"] and s.get("reader") is not None)
+                            or (
+                                s["is_file"]
+                                and s.get("cap") is not None
+                                and not s.get("ended", False)
+                                and (s["speed"] or cur_speed) == "1x"
+                            )
+                        )
                     ]
 
-                if not live_slots:
-                    time.sleep(0.05)
-                    continue
+                if not async_slots:
+                    break
 
-                cam_time_str = f"{cur_sec // 3600:02d}:{(cur_sec % 3600) // 60:02d}:{cur_sec % 60:02d}"
+                batch_entries = []  # (slot, frame, raw_seq, loc_name, cam_time_str)
                 did_work = False
 
-                for slot in live_slots:
+                for slot in async_slots:
                     if not self.is_running or self.is_paused:
                         break
-                    reader = slot.get("reader")
-                    if reader is None:
-                        continue
+                    if not slot["is_file"]:
+                        reader = slot.get("reader")
+                        if reader is None:
+                            continue
+                        frame, raw_seq, _ = reader.get_latest()
+                        cam_time_str = global_hms
+                    else:
+                        with self._lock:
+                            frame = slot.get("_latest_raw_frame")
+                            raw_seq = slot.get("_raw_seq", 0)
+                            cam_pos = slot["current_frame_pos"]
+                            cam_fps = max(1.0, slot["fps"])
+                        cam_time_str = self._format_hms(cam_pos / cam_fps)
 
-                    frame, raw_seq, _ = reader.get_latest()
-                    if frame is None or raw_seq == slot["last_ai_seq"]:
+                    if frame is None or raw_seq == 0 or raw_seq == slot["last_ai_seq"]:
                         continue
 
                     did_work = True
-                    now = time.time()
-                    should_run_ai = True
-                    try:
-                        small_gray = cv2.resize(
-                            cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
-                            (160, 90),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                        last_thumb = slot.get("last_gray_thumb")
-                        if last_thumb is not None:
-                            diff = cv2.absdiff(small_gray, last_thumb)
-                            motion_pixels = int(np.count_nonzero(diff > 22))
-                            if motion_pixels < 25 and (now - slot["last_ai_time"]) < 0.8:
-                                should_run_ai = False
-                        slot["last_gray_thumb"] = small_gray
-                    except Exception:
-                        pass
-
                     slot["last_ai_seq"] = raw_seq
-                    if not should_run_ai:
+                    if not self._should_run_motion_ai(slot, frame, min_pixels=25, heartbeat_sec=0.8):
                         continue
 
                     loc_name = slot["location"].strip() or f"Camera {slot['id'] + 1}"
-                    detections, spotted, match_info = self.scanner.analyze_frame(
-                        frame,
-                        camera_name=loc_name,
-                        video_time_str=cam_time_str,
-                        fast_mode=True,
-                    )
+                    batch_entries.append((slot, frame, raw_seq, loc_name, cam_time_str))
 
-                    with self._lock:
-                        if not slot["enabled"]:
-                            continue
-                        slot["cached_detections"] = detections
-                        slot["cached_spotted"] = spotted
-                        slot["spotted"] = spotted
-                        slot["last_ai_time"] = time.time()
-                        # Trigger immediate redraw if display already drew this raw_seq before AI finished
-                        if slot["last_display_seq"] == raw_seq:
-                            slot["last_display_seq"] = -1
+                if batch_entries and self.is_running and not self.is_paused:
+                    ai_items = [(fr, loc, cts, True) for (_, fr, _, loc, cts) in batch_entries]
+                    batch_out = self.scanner.analyze_batch(ai_items)
+                    ai_now = time.time()
 
-                    # Yield briefly after AI inference so Tkinter UI stays snappy on CPU
-                    time.sleep(0.005)
+                    for (slot, raw_frame, raw_seq, loc_name, cam_time_str), (detections, spotted, match_info) in zip(
+                        batch_entries, batch_out
+                    ):
+                        with self._lock:
+                            if not slot["enabled"]:
+                                continue
+                            slot["cached_detections"] = detections
+                            slot["cached_spotted"] = spotted
+                            slot["spotted"] = spotted
+                            slot["last_ai_time"] = ai_now
+                            if not slot["is_file"]:
+                                if slot["last_display_seq"] == raw_seq:
+                                    slot["last_display_seq"] = -1
+                            else:
+                                # Refresh current frame overlay immediately if video is paused on a low FPS cadence
+                                preview = _cap_height_480(raw_frame)
+                                slot["current_frame"] = self.scanner.draw_overlays(
+                                    preview, detections, spotted, camera_name=loc_name, video_time_str=cam_time_str
+                                )
+                                slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+
+                        if spotted and match_info:
+                            self._record_slot_sighting(slot, loc_name, cam_time_str, match_info)
 
                     live_sweeps += 1
-
-                    if spotted and match_info:
-                        self.last_spotlight_idx = slot["id"]
-                        self.tracker.log_sighting(
-                            camera_name=loc_name,
-                            confidence=match_info.get("confidence", 0.8),
-                            snapshot_path=match_info.get("snapshot_path", ""),
-                            video_time=cam_time_str,
-                            camera_id=slot["id"]
-                        )
+                    time.sleep(0.005)
 
                 elapsed = time.time() - rate_timer
                 if elapsed >= 1.0:
-                    if not self.has_file_slots:
-                        self.current_steps_per_sec = live_sweeps / elapsed
+                    with self._lock:
+                        if self.has_live_slots and not self.has_file_slots:
+                            self.current_steps_per_sec = live_sweeps / elapsed
                     live_sweeps = 0
                     rate_timer = time.time()
 
-                if not did_work:
+                if not did_work or not batch_entries:
                     time.sleep(0.008)
             except Exception:
                 if not self.is_running:
                     break
                 time.sleep(0.02)
 
+    def _grab_fast_slot_frame(self, slot, cur_speed):
+        """Worker task: decodes next fast-scan frame for one slot and evaluates motion gate."""
+        try:
+            with slot["op_lock"]:
+                cap = slot.get("cap")
+                if cap is None or not cap.isOpened() or not slot["enabled"] or not self.is_running:
+                    return None
+                pos = slot["current_frame_pos"]
+                if slot["total_frames"] > 0 and pos >= slot["total_frames"]:
+                    slot["ended"] = True
+                    return {"slot": slot, "ended": True}
+                ret, frame = self._read_slot_frame_at(slot, pos)
+                if not ret or frame is None:
+                    slot["ended"] = True
+                    return {"slot": slot, "ended": True}
+
+            if not slot["enabled"] or not self.is_running:
+                return None
+
+            cam_time_str = self._format_hms(pos / max(1.0, slot["fps"]))
+            loc_name = slot["location"].strip() or f"Camera {slot['id'] + 1}"
+            should_ai = self._should_run_motion_ai(slot, frame, min_pixels=35, heartbeat_sec=2.0)
+            return {
+                "slot": slot,
+                "frame": frame,
+                "loc_name": loc_name,
+                "cam_time_str": cam_time_str,
+                "should_ai": should_ai,
+                "ended": False,
+            }
+        except Exception:
+            return {"slot": slot, "ended": False, "frame": None}
+
     def _parallel_scan_loop(self, on_finished_callback):
         """
-        Parallel 4-Core Worker Loop:
-        Executes recorded video file slots simultaneously using ThreadPoolExecutor across CPU cores.
-        Supports real-time mid-video speed adjustment and instant freeze/pause.
+        Batched + Wall-Clock Paced Fast-Scan Worker Loop (5x, 10x, 20x, 40x):
+        Decodes frames in parallel, runs a single batched YOLO pass across all active
+        fast cameras (~4x faster on CPU), and scales frame jumps dynamically so 40x
+        runs near true 40x speed on both fast GPUs and multi-camera CPUs.
         """
         step_counter = 0
-        timer = time.time()
+        rate_timer = time.time()
+        min_step_sec = 0.065
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             while self.is_running:
@@ -1182,72 +1426,141 @@ class VideoEngine:
                         time.sleep(0.04)
                         continue
 
+                    step_start = time.time()
                     with self._lock:
                         cur_speed = self.current_speed
+                        active_slots = [
+                            s for s in self.slots
+                            if s["enabled"]
+                            and s["is_file"]
+                            and s.get("cap") is not None
+                            and not s.get("ended", False)
+                            and (s["speed"] or cur_speed) != "1x"
+                        ]
 
-                    step_frames, sleep_time = self.speed_map.get(cur_speed, (105, 0.002))
-                    cur_sec = int(self.global_clock_sec)
-                    gh = cur_sec // 3600
-                    gm = (cur_sec % 3600) // 60
-                    gs = cur_sec % 60
-                    global_time_str = f"{gh:02d}:{gm:02d}:{gs:02d}"
-
-                    active_slots = [
-                        s for s in self.slots
-                        if s["enabled"] and s["is_file"] and s["cap"] is not None and not s.get("ended", False)
-                    ]
                     if not active_slots or not self.is_running:
-                        break
-
-                    # Dispatch all active file cameras in parallel across 4 CPU cores
-                    futures = [
-                        executor.submit(self._process_camera_slot, s, cur_speed, global_time_str, cur_sec)
-                        for s in active_slots
-                    ]
-
-                    # Wait for all camera inferences in this parallel step
-                    all_ended = True
-                    for f in concurrent.futures.as_completed(futures):
-                        try:
-                            res = f.result()
-                            if res and not res.get("ended", False):
-                                all_ended = False
-                        except Exception:
-                            pass
-
-                    # Advance global clock synchronously by step interval
-                    step_seconds = step_frames / 30.0
-                    self.global_clock_sec += step_seconds
-
-                    # Check if all video files finished
-                    if all_ended and self.is_running:
+                        self._check_and_finish_if_all_ended()
                         with self._lock:
-                            self._refresh_active_flags_locked()
-                            still_has_live = self.has_live_slots
-                            if still_has_live:
-                                self.start_clock_sec = self.global_clock_sec
-                                self.start_real_time = time.time()
-                        if still_has_live:
-                            break
-                        if self.max_video_duration > 0:
-                            self.is_running = False
-                            if on_finished_callback:
-                                try:
-                                    on_finished_callback()
-                                except Exception:
-                                    pass
+                            if not (
+                                self.is_running
+                                and any(
+                                    s["enabled"] and s["is_file"] and s.get("cap") is not None
+                                    and not s.get("ended", False)
+                                    and (s["speed"] or self.current_speed) != "1x"
+                                    for s in self.slots
+                                )
+                            ):
+                                break
+                        continue
+
+                    # Phase 1: Parallel capture read + motion gate
+                    grab_futures = [executor.submit(self._grab_fast_slot_frame, s, cur_speed) for s in active_slots]
+                    grabbed = []
+                    for f in concurrent.futures.as_completed(grab_futures):
+                        res = f.result()
+                        if res is not None:
+                            grabbed.append(res)
+
+                    ai_targets = [g for g in grabbed if not g.get("ended") and g.get("frame") is not None and g.get("should_ai")]
+                    all_ended = all(g.get("ended", False) for g in grabbed) if grabbed else True
+
+                    # Phase 2: Single batched YOLO inference + parallel Re-ID across active cameras
+                    ai_results = {}
+                    if ai_targets and self.is_running:
+                        ai_items = [(g["frame"], g["loc_name"], g["cam_time_str"], True) for g in ai_targets]
+                        batch_out = self.scanner.analyze_batch(ai_items, executor=executor)
+                        now_ai = time.time()
+                        for g, out in zip(ai_targets, batch_out):
+                            ai_results[g["slot"]["id"]] = out
+                            g["slot"]["last_ai_time"] = now_ai
+
+                    # Phase 3: Render lightweight 480p overlays in parallel
+                    def _publish_fast_slot(g):
+                        slot = g["slot"]
+                        frame = g.get("frame")
+                        if frame is None or not slot["enabled"] or not self.is_running:
+                            return
+                        preview = _cap_height_480(frame)
+                        out = ai_results.get(slot["id"])
+                        if out is not None:
+                            detections, spotted, match_info = out
+                            annotated = self.scanner.draw_overlays(
+                                preview, detections, spotted, camera_name=g["loc_name"], video_time_str=g["cam_time_str"]
+                            )
+                            with self._lock:
+                                slot["spotted"] = spotted
+                                slot["cached_detections"] = detections
+                                slot["cached_spotted"] = spotted
+                                slot["current_frame"] = annotated
+                                slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+                            if spotted and match_info:
+                                self._record_slot_sighting(slot, g["loc_name"], g["cam_time_str"], match_info)
+                        else:
+                            # Fast path for static frames skipped by motion gate
+                            if preview is frame:
+                                preview = frame.copy()
+                            with self._lock:
+                                slot["spotted"] = False
+                                slot["cached_detections"] = []
+                                slot["cached_spotted"] = False
+                                slot["current_frame"] = preview
+                                slot["frame_seq"] = slot.get("frame_seq", 0) + 1
+
+                    pub_targets = [g for g in grabbed if not g.get("ended") and g.get("frame") is not None]
+                    if len(pub_targets) > 1:
+                        list(executor.map(_publish_fast_slot, pub_targets))
+                    elif pub_targets:
+                        _publish_fast_slot(pub_targets[0])
+
+                    if all_ended:
+                        self._check_and_finish_if_all_ended()
                         break
+
+                    # Phase 4: Wall-clock pacing & adaptive jump for NEXT step
+                    work_elapsed = time.time() - step_start
+                    if work_elapsed < min_step_sec and self.is_running and not self.is_paused:
+                        time.sleep(min_step_sec - work_elapsed)
+
+                    dt = max(0.015, time.time() - step_start)
+                    if not self.is_paused and self.is_running:
+                        with self._lock:
+                            for g in pub_targets:
+                                slot = g["slot"]
+                                if not slot["enabled"] or slot.get("ended", False):
+                                    continue
+                                slot_spd = slot["speed"] or self.current_speed
+                                mult = self.speed_multipliers.get(slot_spd, 10.0)
+                                jump_frames = max(1, int(round(dt * mult * max(1.0, slot["fps"]))))
+                                next_pos = slot["current_frame_pos"] + jump_frames
+                                if slot["total_frames"] > 0 and next_pos >= slot["total_frames"]:
+                                    slot["current_frame_pos"] = slot["total_frames"]
+                                    slot["ended"] = True
+                                else:
+                                    slot["current_frame_pos"] = next_pos
+
+                            if self._fast_owns_clock_locked():
+                                global_mult = self.speed_multipliers.get(self.current_speed, 10.0)
+                                self.global_clock_sec += dt * global_mult
+                                if self.max_video_duration > 0:
+                                    self.global_clock_sec = min(self.max_video_duration, self.global_clock_sec)
 
                     step_counter += 1
-                    elapsed = time.time() - timer
-                    if elapsed >= 1.0:
-                        self.current_steps_per_sec = step_counter / elapsed
+                    elapsed_rate = time.time() - rate_timer
+                    if elapsed_rate >= 1.0:
+                        with self._lock:
+                            self.current_steps_per_sec = step_counter / elapsed_rate
                         step_counter = 0
-                        timer = time.time()
+                        rate_timer = time.time()
 
-                    if self.is_running:
-                        # Small cooperative yield prevents 4 CPU-heavy threads from starving GUI events
-                        time.sleep(max(0.012, sleep_time))
+                    with self._lock:
+                        still_fast = any(
+                            s["enabled"] and s["is_file"] and not s.get("ended", False)
+                            and (s["speed"] or self.current_speed) != "1x"
+                            for s in self.slots
+                        )
+                    if not still_fast:
+                        self._check_and_finish_if_all_ended()
+                        break
                 except Exception:
                     if not self.is_running:
                         break

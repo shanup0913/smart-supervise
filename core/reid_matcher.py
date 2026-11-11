@@ -29,6 +29,8 @@ class TargetMatcher:
         # Auto-detect NVIDIA CUDA GPU; fall back to CPU seamlessly
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._lock = threading.RLock()
+        self._face_lock = threading.RLock()
+        self._deep_lock = threading.RLock()
         
         # ── 1. Deep Feature Extractor (MobileNetV3) ──────────────────────────
         weights = models.MobileNet_V3_Small_Weights.DEFAULT
@@ -126,7 +128,7 @@ class TargetMatcher:
         # Pre-enhance crop if lighting is dark (avoid running twice if caller already enhanced)
         enhanced = image_bgr if pre_enhanced else self._enhance_lighting_if_dark(image_bgr)
             
-        with self._lock:
+        with self._face_lock:
             # Stage 1: YuNet on native crop
             try:
                 self.face_detector.setInputSize((w, h))
@@ -232,7 +234,7 @@ class TargetMatcher:
 
     def _extract_deep_features(self, image_pil):
         """Extracts 576-dimensional deep feature vector (Thread-Safe)."""
-        with self._lock:
+        with self._deep_lock:
             tensor = self.transform(image_pil).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 features = self.feature_extractor(tensor)
@@ -368,7 +370,7 @@ class TargetMatcher:
 
                 if profile.has_face and self.face_recognizer is not None and cand_face_feat is not None:
                     # Both faces visible: Biometric SFace comparison (Thread-safe)
-                    with self._lock:
+                    with self._face_lock:
                         raw_face_cos = self.face_recognizer.match(
                             profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
                         )

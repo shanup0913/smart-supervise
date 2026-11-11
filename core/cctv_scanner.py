@@ -234,41 +234,43 @@ class CCTVScanner:
             return ids or None
         return None
 
-    def analyze_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
-        """
-        Runs YOLO detection and target Re-ID / class matching on a frame without drawing.
-        Returns (detections, target_spotted_in_frame, best_match_info).
-        """
+    @staticmethod
+    def _prepare_ai_frame(frame):
+        """Caps oversized >720p frames cleanly so CPU YOLO/crops skip 4K/1080p memory bloat."""
         if frame is None:
-            return [], False, None
+            return None
+        h, w = frame.shape[:2]
+        if h <= 720:
+            return frame
+        scale = 720.0 / h
+        return cv2.resize(frame, (max(1, int(w * scale)), 720), interpolation=cv2.INTER_LINEAR)
 
+    def _build_yolo_kwargs(self, fast_mode=False):
+        yolo_kwargs = {
+            "verbose": False,
+            "conf": 0.30 if fast_mode else 0.28,
+            "device": self.device,
+        }
+        if fast_mode:
+            yolo_kwargs["imgsz"] = 320
+        target_classes = self._get_target_yolo_classes()
+        if target_classes is not None:
+            yolo_kwargs["classes"] = target_classes
+        return yolo_kwargs
+
+    def _process_yolo_result(self, frame, result, camera_name="Camera 1", video_time_str=None, fast_mode=False):
+        """Extracts body detections, runs Re-ID/class matching, and updates last sighting."""
         h, w = frame.shape[:2]
         detections = []
         target_spotted_in_frame = False
         best_match_info = None
 
-        yolo_conf = 0.30 if fast_mode else 0.28
-        target_classes = self._get_target_yolo_classes()
-        yolo_kwargs = {
-            "verbose": False,
-            "conf": yolo_conf,
-            "device": self.device,
-        }
-        if fast_mode:
-            yolo_kwargs["imgsz"] = 320
-        if target_classes is not None:
-            yolo_kwargs["classes"] = target_classes
-
-        with self._yolo_lock:
-            results = self.model(frame, **yolo_kwargs)[0]
-
-        for box in results.boxes:
+        for box in result.boxes:
             cls_id = int(box.cls[0].item())
             cls_name = self.model.names[cls_id]
             conf = float(box.conf[0].item())
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
-            # Clip coordinates to frame boundary
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
             bw = x2 - x1
@@ -327,7 +329,6 @@ class CCTVScanner:
             # Case B: Animal Intrusion / Specific Class Detection (e.g. Dog in school)
             elif self.tracking_mode == "class_alert" and cls_name == self.target_class_name:
                 target_spotted_in_frame = True
-                # Calibrate YOLO confidence for human-friendly alert display (e.g. 85-98% for verified dogs)
                 display_conf = min(0.98, max(0.80, 0.72 + (conf - 0.30) * 0.45))
                 conf_pct = int(display_conf * 100)
                 detections.append({
@@ -345,7 +346,6 @@ class CCTVScanner:
                         "video_time": video_time_str
                     }
 
-        # Update Last Known Location if target was spotted (Thread-Safe)
         snapshot_saved_path = ""
         if target_spotted_in_frame and best_match_info:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -359,14 +359,12 @@ class CCTVScanner:
                 self.last_sighting["bbox"] = best_match_info["bbox"]
                 self.last_sighting["target_name"] = best_match_info["target_name"]
 
-                # Save sighting snapshot with burned-in timestamp
                 if not self.sightings_history or (time.time() - self.sightings_history[-1].get("time_epoch", 0)) > 2.0:
                     stamp_clean = (video_time_str or "").replace(":", "-")
                     snapshot_filename = f"sighting_{int(time.time())}_{stamp_clean}.jpg"
                     snapshot_path = os.path.join(self.alerts_dir, snapshot_filename)
 
                     try:
-                        # Burn timestamp into snapshot crop
                         snap_img = best_match_info["crop"].copy()
                         snap_h = snap_img.shape[0]
                         snap_label = f"{camera_name} | {video_time_str or now_str}"
@@ -391,6 +389,75 @@ class CCTVScanner:
             best_match_info["snapshot_path"] = snapshot_saved_path
 
         return detections, target_spotted_in_frame, best_match_info
+
+    def analyze_batch(self, items, executor=None):
+        """
+        Runs batched YOLO detection across multiple frames in one forward pass, then processes
+        Re-ID/class matches per frame.
+        items: sequence of (frame, camera_name, video_time_str, fast_mode)
+        Returns list of (detections, target_spotted_in_frame, best_match_info) aligned with items.
+        """
+        if not items:
+            return []
+
+        outputs = [([], False, None)] * len(items)
+        groups = {}
+        work_frames = []
+        for idx, (frame, cam_name, vtime, fm) in enumerate(items):
+            wf = self._prepare_ai_frame(frame)
+            work_frames.append(wf)
+            if wf is not None:
+                groups.setdefault(bool(fm), []).append(idx)
+
+        yolo_results = [None] * len(items)
+        for fm, idxs in groups.items():
+            yolo_kwargs = self._build_yolo_kwargs(fast_mode=fm)
+            imgs = [work_frames[i] for i in idxs]
+            with self._yolo_lock:
+                try:
+                    batch_res = self.model(imgs, **yolo_kwargs)
+                    for i, res in zip(idxs, batch_res):
+                        yolo_results[i] = res
+                except Exception:
+                    # Fallback to per-frame inference if heterogeneous batch fails
+                    for i in idxs:
+                        yolo_results[i] = self.model(work_frames[i], **yolo_kwargs)[0]
+
+        non_empty = [i for i, res in enumerate(yolo_results) if res is not None and len(res.boxes) > 0]
+        if executor is not None and len(non_empty) > 1:
+            futures = {
+                executor.submit(
+                    self._process_yolo_result,
+                    work_frames[i],
+                    yolo_results[i],
+                    items[i][1],
+                    items[i][2],
+                    bool(items[i][3]),
+                ): i
+                for i in non_empty
+            }
+            for f, i in [(f, futures[f]) for f in futures]:
+                outputs[i] = f.result()
+        else:
+            for i in non_empty:
+                outputs[i] = self._process_yolo_result(
+                    work_frames[i],
+                    yolo_results[i],
+                    items[i][1],
+                    items[i][2],
+                    bool(items[i][3]),
+                )
+
+        return outputs
+
+    def analyze_frame(self, frame, camera_name="Camera 1", video_time_str=None, fast_mode=False):
+        """
+        Runs YOLO detection and target Re-ID / class matching on a frame without drawing.
+        Returns (detections, target_spotted_in_frame, best_match_info).
+        """
+        if frame is None:
+            return [], False, None
+        return self.analyze_batch([(frame, camera_name, video_time_str, fast_mode)])[0]
 
     def draw_overlays(self, frame, detections, spotted_now, camera_name="Camera 1", video_time_str=None):
         """Renders OSD timestamp, cached detection bounding boxes, and bottom status banner."""

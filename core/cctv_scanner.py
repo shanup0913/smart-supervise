@@ -56,8 +56,9 @@ class CCTVScanner:
             "bbox": None
         }
         
-        # Sightings timeline log
+        # Sightings timeline log & recent spatial track memory (per camera)
         self.sightings_history = []
+        self._recent_tracks = {}  # camera_name -> {"rel_bbox": tuple, "seen_at": float}
         
         # Directory for saving alert snapshots
         self.alerts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alerts"))
@@ -71,6 +72,7 @@ class CCTVScanner:
             self.last_sighting["found"] = False
             self.last_sighting["target_name"] = person_name
             self.sightings_history.clear()
+            self._recent_tracks.clear()
             return True
 
     def add_person_photo(self, photo_path_or_crop, angle_label=None):
@@ -203,6 +205,7 @@ class CCTVScanner:
             self.last_sighting["found"] = False
             self.last_sighting["target_name"] = target_name
             self.sightings_history.clear()
+            self._recent_tracks.clear()
             for crop, label in selected_angles:
                 self.matcher.add_target_photo(crop, angle_label=label)
 
@@ -217,6 +220,7 @@ class CCTVScanner:
             self.last_sighting["found"] = False
             self.last_sighting["target_name"] = f"Intruder ({class_name.capitalize()})"
             self.sightings_history.clear()
+            self._recent_tracks.clear()
             return True
 
     def _get_target_yolo_classes(self):
@@ -245,14 +249,30 @@ class CCTVScanner:
         scale = 720.0 / h
         return cv2.resize(frame, (max(1, int(w * scale)), 720), interpolation=cv2.INTER_LINEAR)
 
+    @staticmethod
+    def _bbox_iou(box_a, box_b):
+        """Intersection-over-Union for normalized (x1, y1, x2, y2) bounding boxes."""
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        if inter <= 0.0:
+            return 0.0
+        area_a = max(1e-6, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1e-6, (bx2 - bx1) * (by2 - by1))
+        return inter / max(1e-6, area_a + area_b - inter)
+
     def _build_yolo_kwargs(self, fast_mode=False):
         yolo_kwargs = {
             "verbose": False,
-            "conf": 0.30 if fast_mode else 0.28,
+            "conf": 0.28 if fast_mode else 0.25,
+            "iou": 0.55,
+            "imgsz": 480 if fast_mode else 640,
             "device": self.device,
         }
-        if fast_mode:
-            yolo_kwargs["imgsz"] = 320
         target_classes = self._get_target_yolo_classes()
         if target_classes is not None:
             yolo_kwargs["classes"] = target_classes
@@ -284,7 +304,18 @@ class CCTVScanner:
                 if aspect < 0.85 and conf < 0.60:
                     continue  # Horizontal limb, hand, or background artifact
 
-            crop = frame[y1:y2, x1:x2]
+            # Safe forehead/shoulder margin for person crops so tight YOLO boxes do not slice heads
+            if cls_name == "person":
+                pad_x = int(bw * 0.03)
+                pad_top = int(bh * 0.05)
+                pad_bot = int(bh * 0.02)
+                cx1 = max(0, x1 - pad_x)
+                cy1 = max(0, y1 - pad_top)
+                cx2 = min(w, x2 + pad_x)
+                cy2 = min(h, y2 + pad_bot)
+                crop = frame[cy1:cy2, cx1:cx2]
+            else:
+                crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
 
@@ -298,6 +329,19 @@ class CCTVScanner:
             # Case A: Searching for a specific Person by Photo
             if self.tracking_mode == "person_photo" and cls_name == "person":
                 is_match, similarity = self.matcher.compare(crop, fast_mode=fast_mode)
+
+                # Short temporal spatial hysteresis: stabilize borderline 1-frame motion blur
+                if not is_match and similarity >= (self.matcher.match_threshold - 0.04):
+                    now_ts = time.time()
+                    with self._lock:
+                        prev = self._recent_tracks.get(camera_name)
+                    if prev and (now_ts - prev["seen_at"]) <= 2.0 and self._bbox_iou(rel_bbox, prev["rel_bbox"]) >= 0.35:
+                        similarity = round(min(1.0, similarity + 0.04), 3)
+                        is_match = similarity >= self.matcher.match_threshold
+
+                if is_match:
+                    with self._lock:
+                        self._recent_tracks[camera_name] = {"rel_bbox": rel_bbox, "seen_at": time.time()}
 
                 if is_match:
                     target_spotted_in_frame = True

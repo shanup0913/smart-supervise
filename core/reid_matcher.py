@@ -9,13 +9,24 @@ from PIL import Image
 
 class TargetAngleProfile:
     """Stores biometric and visual features for a specific reference angle/photo."""
-    def __init__(self, face_feat, face_box, upper_color, lower_color, deep_emb, thumbnail, angle_label="Front"):
+    def __init__(
+        self,
+        face_feat,
+        face_box,
+        upper_color,
+        lower_color,
+        deep_emb,
+        thumbnail,
+        angle_label="Front",
+        deep_emb_flip=None,
+    ):
         self.face_feature = face_feat
         self.face_box = face_box
         self.has_face = (face_feat is not None)
         self.upper_color = upper_color
         self.lower_color = lower_color
         self.deep_emb = deep_emb
+        self.deep_emb_flip = deep_emb_flip
         self.thumbnail = thumbnail
         self.angle_label = angle_label
 
@@ -134,8 +145,11 @@ class TargetMatcher:
                 self.face_detector.setInputSize((w, h))
                 _, faces = self.face_detector.detect(enhanced)
                 if faces is not None and len(faces) > 0:
-                    # Filter to upper 65% of person body with confidence >= 0.40 (prevents false stomach/shirt fold detections)
-                    valid_faces = [f for f in faces if f[-1] >= 0.40 and f[1] < h * 0.65]
+                    # Filter to upper 60% of person body, realistic min face size >= 12px, and confidence >= 0.46
+                    valid_faces = [
+                        f for f in faces
+                        if f[-1] >= 0.46 and f[1] < h * 0.60 and f[2] >= 12 and f[3] >= 12
+                    ]
                     if valid_faces:
                         best_face = max(valid_faces, key=lambda f: f[-1])
                         aligned = self.face_recognizer.alignCrop(enhanced, best_face)
@@ -145,16 +159,16 @@ class TargetMatcher:
             except Exception:
                 pass
 
-            # Stage 2: YuNet on head region (upper 55%) at 2x upscale (only needed for smaller crops)
+            # Stage 2: YuNet on head region (upper 55%) at 2x upscale for medium/distant CCTV crops
             try:
                 head_h = int(h * 0.55)
-                if head_h >= 20 and w < 220:
+                if head_h >= 20 and w < 260:
                     head_crop = enhanced[:head_h, :]
                     scaled_head = cv2.resize(head_crop, (w * 2, head_h * 2))
                     self.face_detector.setInputSize((w * 2, head_h * 2))
                     _, faces = self.face_detector.detect(scaled_head)
                     if faces is not None and len(faces) > 0:
-                        valid_faces = [f for f in faces if f[-1] >= 0.40]
+                        valid_faces = [f for f in faces if f[-1] >= 0.45 and f[2] >= 12 and f[3] >= 12]
                         if valid_faces:
                             best_face = max(valid_faces, key=lambda f: f[-1])
                             aligned = self.face_recognizer.alignCrop(scaled_head, best_face)
@@ -189,48 +203,63 @@ class TargetMatcher:
         return None, None
 
     def _extract_clothing_colors(self, image_bgr, face_box=None):
-        """Extracts LAB color histograms for clothing below the chin."""
+        """Extracts LAB chroma-weighted color signatures from the center body corridor."""
         h, w = image_bgr.shape[:2]
-        
+        # Focus on center 60% width when crop is wide enough to reject edge background wall/floor pixels
+        if w >= 26:
+            cx0, cx1 = int(w * 0.20), int(w * 0.80)
+            body = image_bgr[:, cx0:cx1]
+        else:
+            body = image_bgr
+
         if face_box is not None:
             fx, fy, fw, fh = face_box
             chin_y = min(h, fy + fh)
-            torso_crop = image_bgr[chin_y:h, :]
-            if torso_crop.shape[0] > 10:
+            torso_crop = body[chin_y:h, :]
+            if torso_crop.shape[0] > 12:
                 th = torso_crop.shape[0]
-                upper = torso_crop[:int(th * 0.55), :]
-                lower = torso_crop[int(th * 0.55):, :]
+                upper = torso_crop[:int(th * 0.52), :]
+                lower = torso_crop[int(th * 0.52):max(int(th * 0.52) + 2, int(th * 0.92)), :]
             else:
-                upper = image_bgr[int(h * 0.25):int(h * 0.65), :]
-                lower = image_bgr[int(h * 0.65):, :]
+                upper = body[int(h * 0.22):int(h * 0.56), :]
+                lower = body[int(h * 0.56):max(int(h * 0.56) + 2, int(h * 0.92)), :]
         else:
-            upper = image_bgr[int(h * 0.15):int(h * 0.55), :]
-            lower = image_bgr[int(h * 0.55):int(h * 0.95), :]
+            upper = body[int(h * 0.18):int(h * 0.52), :]
+            lower = body[int(h * 0.54):max(int(h * 0.54) + 2, int(h * 0.92)), :]
 
         def get_clothing_hist(crop):
             if crop.size == 0 or crop.shape[0] < 6 or crop.shape[1] < 6:
                 return np.zeros(48, dtype=np.float32)
-            
+
             lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-            # 16 bins for L (Lightness: 0..256), 16 bins for A (0..256), 16 bins for B (0..256)
             hl = cv2.calcHist([lab], [0], None, [16], [0, 256])
             ha = cv2.calcHist([lab], [1], None, [16], [0, 256])
             hb = cv2.calcHist([lab], [2], None, [16], [0, 256])
 
-            # Apply 1D Gaussian smoothing along each channel for natural lighting tolerance
             hl = cv2.GaussianBlur(hl, (1, 3), 0.8)
             ha = cv2.GaussianBlur(ha, (1, 3), 0.8)
             hb = cv2.GaussianBlur(hb, (1, 3), 0.8)
 
-            hl = hl / (np.linalg.norm(hl) + 1e-6)
-            ha = ha / (np.linalg.norm(ha) + 1e-6)
-            hb = hb / (np.linalg.norm(hb) + 1e-6)
+            # Emphasize illumination-invariant color chroma (A/B) over raw brightness (L)
+            hl = (hl / (np.linalg.norm(hl) + 1e-6)) * 0.55
+            ha = (ha / (np.linalg.norm(ha) + 1e-6)) * 1.0
+            hb = (hb / (np.linalg.norm(hb) + 1e-6)) * 1.0
 
             sig = np.concatenate([hl.flatten(), ha.flatten(), hb.flatten()])
             norm = np.linalg.norm(sig)
             return (sig / norm).astype(np.float32) if norm > 0 else np.zeros(48, dtype=np.float32)
 
         return get_clothing_hist(upper), get_clothing_hist(lower)
+
+    @staticmethod
+    def _color_hist_similarity(h_ref, h_cand):
+        """Chroma-aware clothing similarity blending full LAB and chroma-only (A/B) agreement."""
+        full_cos = max(0.0, float(np.dot(h_ref, h_cand)))
+        ab_ref = h_ref[16:]
+        ab_cand = h_cand[16:]
+        ab_denom = (float(np.linalg.norm(ab_ref)) * float(np.linalg.norm(ab_cand))) + 1e-6
+        ab_cos = max(0.0, float(np.dot(ab_ref, ab_cand)) / ab_denom)
+        return (0.55 * full_cos) + (0.45 * ab_cos)
 
     def _extract_deep_features(self, image_pil):
         """Extracts 576-dimensional deep feature vector (Thread-Safe)."""
@@ -266,16 +295,20 @@ class TargetMatcher:
             else:
                 angle_label = f"Angle {idx}"
 
+        # Normalize lighting gently on reference photo before feature extraction
+        work_ref = self._enhance_lighting_if_dark(image_bgr)
+
         # 1. Biometric Face Analysis
-        face_feat, face_box = self._detect_face_and_feature(image_bgr)
-        
+        face_feat, face_box = self._detect_face_and_feature(work_ref, pre_enhanced=True)
+
         # 2. Clothing Color Signatures
-        upper_color, lower_color = self._extract_clothing_colors(image_bgr, face_box=face_box)
-        
-        # 3. Deep Appearance Representation
-        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        upper_color, lower_color = self._extract_clothing_colors(work_ref, face_box=face_box)
+
+        # 3. Deep Appearance Representation (both native and horizontally mirrored for walk-direction invariance)
+        image_rgb = cv2.cvtColor(work_ref, cv2.COLOR_BGR2RGB)
         deep_emb = self._extract_deep_features(Image.fromarray(image_rgb))
-        
+        deep_emb_flip = self._extract_deep_features(Image.fromarray(cv2.flip(image_rgb, 1)))
+
         # 4. Thumbnail
         thumbnail = cv2.resize(image_bgr, (96, 128))
 
@@ -286,7 +319,8 @@ class TargetMatcher:
             lower_color=lower_color,
             deep_emb=deep_emb,
             thumbnail=thumbnail,
-            angle_label=angle_label
+            angle_label=angle_label,
+            deep_emb_flip=deep_emb_flip,
         )
         with self._lock:
             if len(self.target_profiles) == 0:
@@ -349,21 +383,26 @@ class TargetMatcher:
                     cand_rgb = cv2.cvtColor(enhanced_cand, cv2.COLOR_BGR2RGB)
                     cand_deep = self._extract_deep_features(Image.fromarray(cand_rgb))
                 raw_deep_sim = float(np.dot(profile.deep_emb, cand_deep))
-                if raw_deep_sim <= 0.88:
-                    return max(0.0, raw_deep_sim * 0.10)
-                return min(1.0, 0.10 + ((raw_deep_sim - 0.88) / 0.10) * 0.90)
+                flip_emb = getattr(profile, "deep_emb_flip", None)
+                if flip_emb is not None:
+                    raw_deep_sim = max(raw_deep_sim, float(np.dot(flip_emb, cand_deep)))
+                if raw_deep_sim <= 0.58:
+                    return max(0.0, (raw_deep_sim / 0.58) * 0.12)
+                if raw_deep_sim <= 0.78:
+                    return 0.12 + ((raw_deep_sim - 0.58) / 0.20) * 0.36
+                return min(1.0, 0.48 + ((raw_deep_sim - 0.78) / 0.18) * 0.50)
 
             # Evaluate candidate against EVERY reference angle profile
             scores = []
             for profile in profiles_snapshot:
-                sim_upper = max(0.0, float(np.dot(profile.upper_color, cand_upper)))
-                sim_lower = max(0.0, float(np.dot(profile.lower_color, cand_lower)))
+                sim_upper = self._color_hist_similarity(profile.upper_color, cand_upper)
+                sim_lower = self._color_hist_similarity(profile.lower_color, cand_lower)
 
                 # Dual-zone conjunction: if either shirt OR pants is wrong color, apply quadratic penalty
                 min_color_sim = min(sim_upper, sim_lower)
                 avg_color_sim = (0.55 * sim_upper) + (0.45 * sim_lower)
-                if min_color_sim < 0.40:
-                    penalty = max(0.0, min_color_sim / 0.40)
+                if min_color_sim < 0.42:
+                    penalty = max(0.0, min_color_sim / 0.42)
                     color_score = avg_color_sim * (penalty ** 2.0)
                 else:
                     color_score = avg_color_sim
@@ -374,23 +413,31 @@ class TargetMatcher:
                         raw_face_cos = self.face_recognizer.match(
                             profile.face_feature, cand_face_feat, cv2.FaceRecognizerSF_FR_COSINE
                         )
-                    if raw_face_cos < 0.363:
-                        # Confirmed DIFFERENT person -> capped <= 12% (MISMATCH, skip MobileNet!)
-                        score = max(0.0, (raw_face_cos / 0.363) * 0.12) if raw_face_cos > 0 else 0.02
-                    else:
-                        # Confirmed SAME person -> 72% to 98%
-                        face_calibrated = 0.72 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.26
+                    if raw_face_cos >= 0.363:
+                        # Confirmed SAME person -> 74% to 99%
+                        face_calibrated = 0.74 + ((raw_face_cos - 0.363) / (1.0 - 0.363)) * 0.25
                         sim_deep = _get_deep_sim(profile)
-                        score = (0.75 * face_calibrated) + (0.15 * color_score) + (0.10 * sim_deep)
+                        score = (0.72 * face_calibrated) + (0.16 * color_score) + (0.12 * sim_deep)
+                    elif raw_face_cos >= 0.24:
+                        # Borderline CCTV / 3/4 side angle: fuse biometric hint with clothing & deep Re-ID
+                        if color_score >= 0.58 and min_color_sim >= 0.42:
+                            sim_deep = _get_deep_sim(profile)
+                            face_mid = 0.40 + ((raw_face_cos - 0.24) / 0.123) * 0.32
+                            score = min(0.74, (0.42 * face_mid) + (0.32 * color_score) + (0.26 * sim_deep))
+                        else:
+                            score = max(0.0, min(0.32, color_score * 0.45))
+                    else:
+                        # Confirmed DIFFERENT person -> capped <= 14% (MISMATCH, skip MobileNet!)
+                        score = max(0.0, (raw_face_cos / 0.24) * 0.14) if raw_face_cos > 0 else 0.02
 
                 elif profile.has_face and cand_face_feat is None:
                     # Reference profile has face, but candidate has NO visible face (turned away / walking back)
-                    if color_score >= 0.62 and min_color_sim >= 0.45:
+                    if color_score >= 0.58 and min_color_sim >= 0.42:
                         sim_deep = _get_deep_sim(profile)
-                        if sim_deep >= 0.55:
-                            score = min(0.72, (0.55 * color_score) + (0.45 * sim_deep))
+                        if sim_deep >= 0.50:
+                            score = min(0.75, (0.52 * color_score) + (0.48 * sim_deep))
                         else:
-                            score = max(0.0, min(0.35, color_score * 0.50 + sim_deep * 0.50))
+                            score = max(0.0, min(0.42, color_score * 0.50 + sim_deep * 0.50))
                     else:
                         # Clearly mismatched clothing without visible face -> skip MobileNet!
                         score = max(0.0, min(0.35, color_score * 0.50))
@@ -398,7 +445,7 @@ class TargetMatcher:
                 else:
                     # Reference profile itself has no face (e.g. explicitly uploaded Back/Walking profile)
                     sim_deep = _get_deep_sim(profile)
-                    score = (0.55 * color_score) + (0.45 * sim_deep)
+                    score = (0.50 * color_score) + (0.50 * sim_deep)
 
                 scores.append(max(0.0, min(1.0, score)))
 

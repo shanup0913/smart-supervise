@@ -9,6 +9,7 @@ import sys
 import time
 import socket
 import signal
+import secrets
 import threading
 import subprocess
 import urllib.request
@@ -94,10 +95,23 @@ def wait_local_ready(port, proc=None, timeout_sec=60):
 
 
 def main():
+    no_auth = "--no-auth" in sys.argv[1:]
     cf_bin = ensure_cloudflared()
     port = choose_listen_port(PORT, explicit=("PORT" in os.environ))
     env = os.environ.copy()
     env["PORT"] = str(port)
+
+    access_code = ""
+    if not no_auth:
+        access_code = env.get("SMARTSUPERVISE_ACCESS_CODE", "").strip()
+        if not access_code:
+            access_code = secrets.token_urlsafe(6)
+        env["SMARTSUPERVISE_ACCESS_CODE"] = access_code
+        if not env.get("SMARTSUPERVISE_SESSION_SECRET"):
+            env["SMARTSUPERVISE_SESSION_SECRET"] = secrets.token_hex(32)
+        print(f"[Launcher] Access Gate ENABLED. Passcode: {access_code}", flush=True)
+    else:
+        print("[Launcher] WARNING: --no-auth specified; public URL has NO passcode lock.", flush=True)
 
     print("[Launcher] Starting SmartSupervise server (web_app.py)...", flush=True)
     web_proc = subprocess.Popen(
@@ -144,9 +158,11 @@ def main():
                     announced = True
                     print("\n" + "=" * 70, flush=True)
                     print("  SMART SUPERVISE IS LIVE!", flush=True)
-                    print(f"  Public URL (Phone / Any PC): {public_url}", flush=True)
-                    print(f"  Local URL  (This PC):        http://127.0.0.1:{port}", flush=True)
-                    print(f"  Wi-Fi URL  (Same Network):   http://{lan_ip}:{port}", flush=True)
+                    print(f"  Public URL (Phone / Any PC):   {public_url}", flush=True)
+                    if access_code:
+                        print(f"  Access Passcode (Required!):   {access_code}", flush=True)
+                    print(f"  Local URL  (This PC):          http://127.0.0.1:{port}", flush=True)
+                    print(f"  Wi-Fi URL  (Same Network):     http://{lan_ip}:{port}", flush=True)
                     print("  Keep this window open to stay live. Press Ctrl+C to stop.", flush=True)
                     print("=" * 70 + "\n", flush=True)
             if web_proc.poll() is not None:

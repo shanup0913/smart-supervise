@@ -79,7 +79,7 @@
       cursor: not-allowed;
     }
 
-    input[type="text"], input[type="search"], select {
+    input[type="text"], input[type="password"], input[type="search"], select {
       width: 100%;
       background: var(--bg);
       border: 1px solid var(--border-hi);
@@ -90,7 +90,7 @@
       transition: border-color 0.15s;
       min-width: 0;
     }
-    input[type="text"]:focus, select:focus {
+    input[type="text"]:focus, input[type="password"]:focus, select:focus {
       border-color: var(--blue);
     }
 
@@ -805,6 +805,138 @@
       display: none;
     }
 
+    /* ── Center Telemetry Strip, Spotlight & Full Map View ─────── */
+    .telemetry-strip {
+      flex: 0 0 auto;
+      padding: 5px 12px;
+      background: #0c101b;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--amber);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .full-map-view {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: none;
+      flex-direction: column;
+      background: #080a12;
+      overflow: hidden;
+    }
+    .full-map-view.active {
+      display: flex;
+    }
+    .map-tools-bar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 7px 10px;
+      background: #101426;
+      border-bottom: 1px solid var(--border);
+    }
+    .full-map-stage {
+      flex: 1 1 auto;
+      min-height: 240px;
+      position: relative;
+      background: #0a0b16;
+      overflow: hidden;
+    }
+    #fullMapCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .map-ctrl-bar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 7px 10px;
+      background: var(--surface-2);
+      border-top: 1px solid var(--border);
+    }
+    .map-step-pill {
+      font-size: 11px;
+      font-weight: 700;
+      color: #34d399;
+      background: var(--bg);
+      border: 1px solid var(--border-hi);
+      border-radius: 6px;
+      padding: 4px 10px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .alert-banner.overlap {
+      background: linear-gradient(90deg, rgba(168, 85, 247, 0.25), rgba(224, 64, 251, 0.14));
+      border-color: rgba(224, 64, 251, 0.5);
+    }
+
+    .tl-item.ORIGIN { border-left-color: var(--emerald); }
+    .tl-item.TRANSIT { border-left-color: var(--cyan); }
+    .tl-item.RETURN { border-left-color: var(--amber); }
+
+    .flowchart-pre {
+      background: #070a12;
+      border: 1px solid var(--border-hi);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.45;
+      color: #e2e8f0;
+      white-space: pre;
+      overflow: auto;
+      max-height: 62dvh;
+    }
+
+    .auth-gate {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: radial-gradient(circle at top, #111827 0%, #06080e 70%);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .auth-gate.open {
+      display: flex;
+    }
+    .auth-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--surface);
+      border: 1px solid var(--border-hi);
+      border-radius: 14px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+    }
+
+    .ctrl-subrow {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
     /* ── Modals & Toast ──────────────────────────────────────── */
     .modal-backdrop {
       position: fixed;
@@ -940,6 +1072,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        flex-wrap: wrap;
         gap: 6px;
         padding: 6px 8px;
         border-bottom: 1px solid var(--border);
@@ -969,6 +1102,28 @@
   </style>
 </head>
 <body>
+  <!-- AUTH LOCK OVERLAY -->
+  <div id="authGate" class="auth-gate">
+    <form class="auth-card" onsubmit="submitPasscode(event)">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="brand-logo">SS</div>
+        <div>
+          <strong style="font-size:16px;">SmartSupervise</strong>
+          <div style="font-size:11px; color:var(--text-muted);">Protected Access Console</div>
+        </div>
+      </div>
+      <p style="font-size:12px; color:var(--text-muted);">
+        Enter the session access passcode shown in your SmartSupervise launcher window to unlock cameras, route maps, and controls.
+      </p>
+      <div>
+        <label class="field-label" for="authPassInput">Access Passcode</label>
+        <input type="password" id="authPassInput" autocomplete="current-password" placeholder="Enter passcode..." required />
+      </div>
+      <div id="authErrMsg" style="display:none; font-size:12px; color:#f87171; font-weight:600;"></div>
+      <button type="submit" id="authSubmitBtn" class="btn-primary">🔓 Unlock Console</button>
+    </form>
+  </div>
+
   <div class="app-shell">
     <!-- TOP BAR -->
     <header class="topbar">
@@ -1011,8 +1166,10 @@
           <button class="speed-pill" data-speed="20x" onclick="setGlobalSpeed('20x')">20x</button>
           <button class="speed-pill" data-speed="40x" onclick="setGlobalSpeed('40x')">40x</button>
         </div>
-        <button id="topStartBtn" class="btn-primary desktop-ctrl" onclick="toggleStartOrPause()">▶ Start</button>
+        <button id="topStartBtn" class="btn-primary desktop-ctrl" onclick="startScan()">▶ Start</button>
+        <button id="topPauseBtn" class="btn-amber desktop-ctrl" onclick="togglePauseScan()" disabled>⏸ Pause</button>
         <button id="topStopBtn" class="btn-danger desktop-ctrl" onclick="stopScan()" disabled>■ Stop</button>
+        <button id="logoutBtn" class="btn-ghost btn-xs" style="display:none;" onclick="logoutSession()" title="Lock session">🔒 Lock</button>
       </div>
     </header>
 
@@ -1033,28 +1190,29 @@
                 <span class="card-title">Tracking Mode</span>
               </div>
               <div class="seg-group">
-                <button class="seg-btn active" id="modePersonBtn" onclick="setTrackingMode('person')">🧑 Person 360°</button>
-                <button class="seg-btn" id="modeClassBtn" onclick="setTrackingMode('class')">📦 Class Intrusion</button>
+                <button class="seg-btn active" id="modePersonBtn" onclick="setTrackingMode('person')">🧑 Person (Biometrics)</button>
+                <button class="seg-btn" id="modeClassBtn" onclick="setTrackingMode('class')">📦 Animal / Intruder</button>
               </div>
             </div>
 
             <!-- Person 360 Sub-card -->
             <div class="card" id="personCard">
               <div class="card-head">
-                <span class="card-title">Target Photos</span>
-                <button class="btn-ghost btn-xs" onclick="clearTargetPhotos()">Clear</button>
+                <span class="card-title">🎯 Target Gallery (360° Poses)</span>
+                <button class="btn-ghost btn-xs" onclick="clearTargetPhotos()">✕ Clear</button>
               </div>
-              <div>
-                <label class="field-label" for="targetNameInput">Target Label</label>
-                <input type="text" id="targetNameInput" value="Target Person" onchange="syncTargetSettings()" />
+              <span style="font-size:11px; color:var(--text-dim);">Upload Front, Side & Back views to track turning suspects.</span>
+              <div id="galleryStrip" class="gallery-strip">
+                <div class="gallery-empty">No Photos Loaded — Upload Front, Side or Back views</div>
               </div>
               <div class="row-2">
-                <button class="btn-blue" onclick="pickTargetPhotos(false)">📸 Set Photos</button>
-                <button onclick="pickTargetPhotos(true)">➕ Add Angles</button>
+                <button class="btn-blue" onclick="pickTargetPhotos(false)">📁 Upload Photo(s)</button>
+                <button onclick="pickTargetPhotos(true)">➕ Add Angle</button>
               </div>
-              <button class="btn-ghost" onclick="pick360Video()">🎬 Extract Angles from 360° Clip</button>
-              <div id="galleryStrip" class="gallery-strip">
-                <div class="gallery-empty">Upload 1–8 clear photos or a 360° reference clip</div>
+              <button class="btn-ghost" onclick="pick360Video()">🎥 Auto 360° from Video Clip</button>
+              <div>
+                <label class="field-label" for="targetNameInput">Target Name</label>
+                <input type="text" id="targetNameInput" value="Target Person" onchange="syncTargetSettings()" />
               </div>
               <input type="file" id="targetPhotoInput" accept="image/*" multiple hidden />
               <input type="file" id="target360Input" accept="video/*" hidden />
@@ -1063,18 +1221,18 @@
             <!-- Class Sub-card -->
             <div class="card" id="classCard" style="display:none;">
               <div class="card-head">
-                <span class="card-title">Class Object Filter</span>
+                <span class="card-title">Alert Class Filter</span>
               </div>
               <div>
-                <label class="field-label" for="classNameInput">Target Object Class</label>
-                <input type="text" id="classNameInput" value="person" onchange="syncTargetSettings()" placeholder="e.g. person, backpack, car" />
+                <label class="field-label" for="classNameInput">Alert Class (e.g. dog, cat, person)</label>
+                <input type="text" id="classNameInput" value="dog" onchange="syncTargetSettings()" placeholder="e.g. dog, cat, backpack, car" />
               </div>
               <div class="class-chips" id="classChips">
-                <button class="class-chip active" onclick="pickClassPreset('person')">person</button>
+                <button class="class-chip active" onclick="pickClassPreset('dog')">dog</button>
+                <button class="class-chip" onclick="pickClassPreset('person')">person</button>
                 <button class="class-chip" onclick="pickClassPreset('backpack')">backpack</button>
                 <button class="class-chip" onclick="pickClassPreset('handbag')">handbag</button>
                 <button class="class-chip" onclick="pickClassPreset('suitcase')">suitcase</button>
-                <button class="class-chip" onclick="pickClassPreset('cell phone')">cell phone</button>
                 <button class="class-chip" onclick="pickClassPreset('car')">car</button>
                 <button class="class-chip" onclick="pickClassPreset('motorcycle')">motorcycle</button>
                 <button class="class-chip" onclick="pickClassPreset('bicycle')">bicycle</button>
@@ -1084,14 +1242,14 @@
             <!-- Sensitivity Card -->
             <div class="card">
               <div class="card-head">
-                <span class="card-title">Match Sensitivity</span>
+                <span class="card-title">🎯 Match Sensitivity</span>
               </div>
               <div class="seg-group">
-                <button class="seg-btn" id="sensStrictBtn" onclick="setSensitivity('strict')">Strict</button>
-                <button class="seg-btn active-green" id="sensBalancedBtn" onclick="setSensitivity('balanced')">Balanced</button>
-                <button class="seg-btn" id="sensFlexibleBtn" onclick="setSensitivity('flexible')">Flexible</button>
+                <button class="seg-btn active-green" id="sensStrictBtn" onclick="setSensitivity('strict')">Strict (70%)</button>
+                <button class="seg-btn" id="sensBalancedBtn" onclick="setSensitivity('balanced')">Balanced (60%)</button>
+                <button class="seg-btn" id="sensFlexibleBtn" onclick="setSensitivity('flexible')">Flexible (50%)</button>
               </div>
-              <span style="font-size:11px; color:var(--text-dim);">Strict avoids false alarms; Flexible recovers difficult side/back angles.</span>
+              <span id="sensHintTxt" style="font-size:11px; color:var(--text-dim);">Strict: Zero false alarms (Ignores hands & random clothes)</span>
             </div>
           </div>
 
@@ -1104,7 +1262,7 @@
 
         <div class="panel-footer">
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-            <span style="font-size:11px; font-weight:700; color:var(--text-muted);">GLOBAL SPEED</span>
+            <span style="font-size:11px; font-weight:700; color:var(--amber);">⚡ FAST SEARCH SPEED</span>
             <div class="speed-pills" id="sideSpeedPills">
               <button class="speed-pill" data-speed="1x" onclick="setGlobalSpeed('1x')">1x</button>
               <button class="speed-pill" data-speed="5x" onclick="setGlobalSpeed('5x')">5x</button>
@@ -1113,44 +1271,46 @@
               <button class="speed-pill" data-speed="40x" onclick="setGlobalSpeed('40x')">40x</button>
             </div>
           </div>
-          <div class="row-2">
-            <button id="sideStartBtn" class="btn-primary" onclick="toggleStartOrPause()">▶ Start Scan</button>
-            <button id="sideStopBtn" class="btn-danger" onclick="stopScan()" disabled>■ Stop Scan</button>
+          <span style="font-size:10px; color:var(--text-dim);">10x = ~4m/40m | 20x = ~2m | 40x = ~1m</span>
+          <button id="sideStartBtn" class="btn-primary" onclick="startScan()">▶  START SCANNING</button>
+          <div class="ctrl-subrow">
+            <button id="sidePauseBtn" class="btn-amber" onclick="togglePauseScan()" disabled>⏸  PAUSE</button>
+            <button id="sideStopBtn" class="btn-danger" onclick="stopScan()" disabled>■  STOP</button>
           </div>
         </div>
       </section>
 
-      <!-- CENTER PANEL: LIVE VIDEO FEEDS -->
+      <!-- CENTER PANEL: LIVE VIDEO FEEDS + FULL INTERACTIVE RADAR MAP -->
       <section class="col-panel col-center mobile-active" id="colCenter">
         <div class="center-toolbar">
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-            <div class="seg-group" style="width:auto;">
-              <button class="seg-btn active" id="viewGridBtn" onclick="setFocusSlot(null)">2x2 Grid</button>
-              <button class="seg-btn" id="viewFocus0" onclick="setFocusSlot(0)">C1</button>
-              <button class="seg-btn" id="viewFocus1" onclick="setFocusSlot(1)">C2</button>
-              <button class="seg-btn" id="viewFocus2" onclick="setFocusSlot(2)">C3</button>
-              <button class="seg-btn" id="viewFocus3" onclick="setFocusSlot(3)">C4</button>
+            <div class="seg-group" style="width:auto; flex-wrap:wrap;">
+              <button class="seg-btn active" id="viewGridBtn" onclick="setCenterMode('grid')">⊞ 4-Grid</button>
+              <button class="seg-btn" id="viewFocus0" onclick="setCenterMode('cam0')">Cam 1</button>
+              <button class="seg-btn" id="viewFocus1" onclick="setCenterMode('cam1')">Cam 2</button>
+              <button class="seg-btn" id="viewFocus2" onclick="setCenterMode('cam2')">Cam 3</button>
+              <button class="seg-btn" id="viewFocus3" onclick="setCenterMode('cam3')">Cam 4</button>
+              <button class="seg-btn" id="viewSpotlightBtn" onclick="setCenterMode('spotlight')">Spotlight</button>
+              <button class="seg-btn" id="viewMapBtn" onclick="setCenterMode('map')">🗺️ Map</button>
             </div>
           </div>
           <div style="display:flex; align-items:center; gap:6px;">
+            <button id="mapQuickBtn" class="btn-blue btn-xs" onclick="toggleCenterMapView()">🗺️ Full Map View</button>
             <button id="streamModeBtn" class="btn-ghost btn-xs" onclick="toggleStreamMode()" title="Switch between continuous MJPEG stream and low-data Snapshot polling">📡 Stream: MJPEG</button>
           </div>
         </div>
 
-        <!-- Last Known Alert Strip -->
-        <div id="alertBanner" class="alert-banner idle">
-          <div style="min-width:0;">
-            <strong id="alertHeadline">Ready — configure target & cameras, then press Start</strong>
-            <div id="alertSub" style="font-size:11px; color:var(--text-muted); margin-top:1px;">Supports local files, webcam, mobile camera IP URLs, and 360° ReID</div>
-          </div>
-          <img id="alertThumb" class="alert-thumb" style="display:none;" alt="Last sighting snapshot" onclick="openLightbox(this.src, 'Last Known Sighting')" />
+        <!-- Hardware Telemetry Strip (Matching CenterGrid) -->
+        <div class="telemetry-strip">
+          <span id="centerTelemText">⚡ Speed Telemetry: Standby</span>
+          <span id="centerFeedsCount" style="color:#60a5fa;">📹 FEEDS: Standby</span>
         </div>
 
+        <!-- Feed Matrix (2x2 Grid / Cam 1-4 / Spotlight) -->
         <div class="feed-grid" id="feedGrid">
-          <!-- 4 Feed Cards injected/kept fixed for stable img tags -->
           <div class="feed-card" id="feedCard0" onclick="onFeedCardClick(0)">
             <div class="feed-header">
-              <span class="feed-tag" id="feedLabel0">CAM 1 · Main Entrance</span>
+              <span class="feed-tag" id="feedLabel0">CAM 1 · Main Gate</span>
               <span class="badge" id="feedBadge0" style="display:none;">SPOTTED</span>
             </div>
             <div class="feed-stage">
@@ -1161,14 +1321,14 @@
               </div>
             </div>
             <div class="feed-footer">
-              <span class="feed-sub tabular" id="feedProg0">0%</span>
+              <span class="feed-sub tabular" id="feedProg0">0.0%</span>
               <span class="feed-sub" id="feedSpd0">10x</span>
             </div>
           </div>
 
           <div class="feed-card" id="feedCard1" onclick="onFeedCardClick(1)">
             <div class="feed-header">
-              <span class="feed-tag" id="feedLabel1">CAM 2 · Lobby / Corridor</span>
+              <span class="feed-tag" id="feedLabel1">CAM 2 · Corridor</span>
               <span class="badge" id="feedBadge1" style="display:none;">SPOTTED</span>
             </div>
             <div class="feed-stage">
@@ -1179,14 +1339,14 @@
               </div>
             </div>
             <div class="feed-footer">
-              <span class="feed-sub tabular" id="feedProg1">0%</span>
+              <span class="feed-sub tabular" id="feedProg1">0.0%</span>
               <span class="feed-sub" id="feedSpd1">10x</span>
             </div>
           </div>
 
           <div class="feed-card" id="feedCard2" onclick="onFeedCardClick(2)">
             <div class="feed-header">
-              <span class="feed-tag" id="feedLabel2">CAM 3 · Stairwell / Elevator</span>
+              <span class="feed-tag" id="feedLabel2">CAM 3 · Room 204</span>
               <span class="badge" id="feedBadge2" style="display:none;">SPOTTED</span>
             </div>
             <div class="feed-stage">
@@ -1197,14 +1357,14 @@
               </div>
             </div>
             <div class="feed-footer">
-              <span class="feed-sub tabular" id="feedProg2">0%</span>
+              <span class="feed-sub tabular" id="feedProg2">0.0%</span>
               <span class="feed-sub" id="feedSpd2">10x</span>
             </div>
           </div>
 
           <div class="feed-card" id="feedCard3" onclick="onFeedCardClick(3)">
             <div class="feed-header">
-              <span class="feed-tag" id="feedLabel3">CAM 4 · Exit / Parking Gate</span>
+              <span class="feed-tag" id="feedLabel3">CAM 4 · Cafeteria</span>
               <span class="badge" id="feedBadge3" style="display:none;">SPOTTED</span>
             </div>
             <div class="feed-stage">
@@ -1215,52 +1375,95 @@
               </div>
             </div>
             <div class="feed-footer">
-              <span class="feed-sub tabular" id="feedProg3">0%</span>
+              <span class="feed-sub tabular" id="feedProg3">0.0%</span>
               <span class="feed-sub" id="feedSpd3">10x</span>
             </div>
           </div>
         </div>
+
+        <!-- FULL INTERACTIVE 2D RAPIDO RADAR & BLUEPRINT MAP VIEW (CenterGrid Mode B) -->
+        <div id="fullMapView" class="full-map-view">
+          <div class="map-tools-bar">
+            <button class="btn-blue btn-xs" onclick="pickBlueprint(false)">🖼️ Upload Blueprint</button>
+            <button class="btn-ghost btn-xs" style="color:#f87171;" onclick="clearBlueprint()">🗑️ Clear Blueprint</button>
+            <button class="btn-ghost btn-xs" onclick="resetRadarMap()">🔄 Reset Pin Locations</button>
+            <button class="btn-ghost btn-xs" id="fullFovToggleBtn" style="color:var(--amber);" onclick="toggleFovCones()">👁️ Hide FOV Cones</button>
+            <span style="font-size:10px; color:var(--amber); font-weight:700; margin-left:auto;">💡 Drag pin center to move · Drag outer handle to rotate 360°</span>
+          </div>
+
+          <div class="full-map-stage">
+            <canvas id="fullMapCanvas"></canvas>
+          </div>
+
+          <div class="map-ctrl-bar">
+            <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+              <button class="btn-ghost btn-xs" id="mapPlayBtn" onclick="toggleMapPlayback()">⏸ Pause</button>
+              <button class="btn-ghost btn-xs" onclick="stepMapBackward()">⏮ Prev Hop</button>
+              <button class="btn-ghost btn-xs" onclick="stepMapForward()">Next Hop ⏭</button>
+              <div class="seg-group" style="width:auto; margin-left:4px;">
+                <button class="seg-btn" id="mapSpd05" style="padding:3px 7px; font-size:10px;" onclick="setMapTracerSpeed(0.5)">Slow 0.5x</button>
+                <button class="seg-btn active" id="mapSpd10" style="padding:3px 7px; font-size:10px;" onclick="setMapTracerSpeed(1.0)">Normal 1x</button>
+                <button class="seg-btn" id="mapSpd20" style="padding:3px 7px; font-size:10px;" onclick="setMapTracerSpeed(2.0)">Fast 2x</button>
+              </div>
+            </div>
+            <div id="mapStepLabel" class="map-step-pill">Trip Status: Standby</div>
+          </div>
+        </div>
+
+        <!-- Last Known Alert Strip (Matches CenterGrid Last Known Location Banner) -->
+        <div id="alertBanner" class="alert-banner idle">
+          <div style="min-width:0;">
+            <strong id="alertHeadline">Last Known Location: Ready to search</strong>
+            <div id="alertSub" style="font-size:11px; color:var(--text-muted); margin-top:1px;">Supports local files, webcam, phone IP URLs, and 360° ReID</div>
+          </div>
+          <img id="alertThumb" class="alert-thumb" style="display:none;" alt="Last sighting snapshot" onclick="openLightbox(this.src, 'Last Known Sighting')" />
+        </div>
       </section>
 
-      <!-- RIGHT PANEL: RADAR MAP & TIMELINE -->
+      <!-- RIGHT PANEL: RADAR MINI-MAP, FLOWCHART & TIMELINE -->
       <section class="col-panel col-right" id="colRight">
         <div class="panel-tabs">
-          <button class="panel-tab active" id="tabMapBothBtn" onclick="scrollRightTop()">🗺️ Radar Map & Timeline</button>
+          <button class="panel-tab active" id="tabMapBothBtn" onclick="scrollRightTop()">🗺️ Journey Radar & Timeline</button>
           <button class="panel-tab tablet-map-toggle" style="display:none; flex:0;" onclick="toggleTabletMap()">✕</button>
         </div>
 
         <div class="panel-scroll" id="rightScroll">
-          <!-- Radar Map Card -->
+          <!-- Mini Rapido Radar Card -->
           <div class="card">
             <div class="card-head">
-              <span class="card-title">Live Facility Radar</span>
+              <span class="card-title" style="color:#34d399;">📍 Rapido Live Route Radar</span>
               <div style="display:flex; gap:4px;">
                 <button class="btn-ghost btn-xs" id="fovToggleBtn" onclick="toggleFovCones()" title="Toggle FOV Cones">👁️ FOV</button>
-                <button class="btn-ghost btn-xs" onclick="pickBlueprint()" title="Upload Custom Floorplan">📐 Plan</button>
+                <button class="btn-ghost btn-xs" onclick="pickBlueprint(true)" title="Upload Custom Floorplan">📐 Plan</button>
                 <button class="btn-ghost btn-xs" onclick="resetRadarMap()" title="Reset Camera Pins">↺ Reset</button>
               </div>
             </div>
-            <div class="map-box">
+            <div class="map-box" title="Click to open Full Map View or drag camera pins">
               <canvas id="radarCanvas"></canvas>
             </div>
-            <div class="map-hint">Drag pin center to move camera · Drag orange aim dot to rotate FOV</div>
+            <div id="routeArrowBox" class="route-pill">Waiting for sightings...</div>
+            <div class="row-2">
+              <button class="btn-ghost btn-xs" style="border-color:var(--blue); color:#93c5fd;" onclick="setCenterMode('map'); if(window.innerWidth<768) switchMobilePane('live');">🗺️ Open Full Map</button>
+              <button class="btn-ghost btn-xs" style="border-color:var(--amber); color:#fbbf24;" onclick="openFlowchartModal()">📊 Flowchart</button>
+            </div>
             <input type="file" id="blueprintInput" accept="image/*" hidden />
           </div>
 
-          <!-- Route & Export Card -->
+          <!-- Detailed Timeline Card -->
           <div class="card">
             <div class="card-head">
-              <span class="card-title">Chronological Route (<span id="sightingCount">0</span>)</span>
-              <div style="display:flex; gap:4px;">
-                <button class="btn-ghost btn-xs" onclick="exportLog('csv')">⬇ CSV</button>
-                <button class="btn-ghost btn-xs" onclick="exportLog('json')">⬇ JSON</button>
-                <button class="btn-ghost btn-xs" onclick="clearTrackerLog()">Clear</button>
-              </div>
+              <span class="card-title">Detailed Timeline Log (<span id="sightingCount">0</span>)</span>
+              <span id="lastSeenAgo" class="tabular" style="font-size:10px; color:var(--text-dim);">Last seen: —</span>
             </div>
-            <div id="routeArrowBox" class="route-pill">Awaiting first target sighting...</div>
             <div id="timelineList" class="timeline-list">
-              <div style="font-size:11px; color:var(--text-dim); text-align:center; padding:12px;">No detections logged yet</div>
+              <div style="font-size:11px; color:var(--text-dim); text-align:center; padding:12px;">No target sightings recorded yet</div>
             </div>
+            <div style="display:grid; grid-template-columns:1fr auto auto; gap:5px; margin-top:4px;">
+              <button class="btn-ghost btn-xs" style="border-color:var(--amber); color:#fbbf24;" onclick="exportBothReports()">⬇ Export (CSV+JSON)</button>
+              <button class="btn-ghost btn-xs" onclick="exportLog('csv')">CSV</button>
+              <button class="btn-ghost btn-xs" onclick="exportLog('json')">JSON</button>
+            </div>
+            <button class="btn-ghost btn-xs" style="border-color:var(--red); color:#f87171;" onclick="clearTrackerLog()">Clear Timeline</button>
           </div>
         </div>
       </section>
@@ -1276,8 +1479,9 @@
           <button class="speed-pill" data-speed="20x" onclick="setGlobalSpeed('20x')">20x</button>
           <button class="speed-pill" data-speed="40x" onclick="setGlobalSpeed('40x')">40x</button>
         </div>
-        <div style="display:flex; gap:6px;">
-          <button id="mobStartBtn" class="btn-primary btn-xs" onclick="toggleStartOrPause()">▶ Start</button>
+        <div style="display:flex; gap:5px;">
+          <button id="mobStartBtn" class="btn-primary btn-xs" onclick="startScan()">▶ Start</button>
+          <button id="mobPauseBtn" class="btn-amber btn-xs" onclick="togglePauseScan()" disabled>⏸ Pause</button>
           <button id="mobStopBtn" class="btn-danger btn-xs" onclick="stopScan()" disabled>■ Stop</button>
         </div>
       </div>
@@ -1290,7 +1494,7 @@
     </div>
   </div>
 
-  <!-- LIGHTBOX / IP CAM MODAL -->
+  <!-- LIGHTBOX / FLOWCHART / PHONE IP / PC BROWSER MODALS -->
   <div id="lightboxModal" class="modal-backdrop" onclick="if(event.target===this) closeLightbox()">
     <div class="modal-card">
       <div class="card-head">
@@ -1301,26 +1505,46 @@
     </div>
   </div>
 
+  <div id="flowchartModal" class="modal-backdrop" onclick="if(event.target===this) closeFlowchartModal()">
+    <div class="modal-card" style="max-width:640px;">
+      <div class="card-head">
+        <strong style="color:#34d399;">🗺️ Complete Movement Journey Flowchart</strong>
+        <button class="btn-ghost btn-xs" onclick="closeFlowchartModal()">✕ Close</button>
+      </div>
+      <pre id="flowchartPre" class="flowchart-pre">No sightings recorded yet.</pre>
+    </div>
+  </div>
+
   <div id="ipHelpModal" class="modal-backdrop" onclick="if(event.target===this) closeIpHelp()">
     <div class="modal-card">
       <div class="card-head">
-        <strong>📱 Connect Phone Camera / IP Stream</strong>
+        <strong>📱 Connect Phone Camera / IP Stream (CAM <span id="ipSlotNum">1</span>)</strong>
         <button class="btn-ghost btn-xs" onclick="closeIpHelp()">✕ Close</button>
       </div>
       <p style="font-size:12px; color:var(--text-muted);">
-        To stream a phone live into SmartSupervise on the same Wi-Fi, open <strong>IP Webcam</strong> (Android) or an MJPEG/RTSP camera app on your phone, then paste its stream URL below:
+        1. Connect phone & PC to the same Wi-Fi (or Phone Hotspot).<br/>
+        2. Open <strong>IP Webcam</strong> (Android, port 8080) or <strong>DroidCam</strong> (iOS/Android, port 4747), tap <em>Start server</em>, and enter IP + Port below:
       </p>
-      <div style="display:flex; flex-direction:column; gap:6px;">
-        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('0')">💻 0 — Built-in / USB Webcam</button>
-        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('http://192.168.1.100:8080/video')">📱 Android IP Webcam (http://.../video)</button>
-        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('http://192.168.1.100:4747/video')">📱 DroidCam MJPEG (http://.../video)</button>
-        <button class="btn-ghost" style="justify-content:flex-start;" onclick="applyIpPreset('rtsp://admin:password@192.168.1.100:554/stream1')">📡 CCTV RTSP Stream (rtsp://...)</button>
+      <div class="seg-group">
+        <button class="seg-btn active" id="ipAppIpWebcam" onclick="selectPhoneApp('ip_webcam')">IP Webcam (8080)</button>
+        <button class="seg-btn" id="ipAppDroidcam" onclick="selectPhoneApp('droidcam')">DroidCam (4747)</button>
+        <button class="seg-btn" id="ipAppWebcam0" onclick="selectPhoneApp('webcam0')">USB Webcam (0)</button>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 90px; gap:8px;">
+        <div>
+          <label class="field-label" for="ipHostInput">Phone IP Address</label>
+          <input type="text" id="ipHostInput" value="192.168.1." placeholder="e.g. 192.168.1.15" />
+        </div>
+        <div>
+          <label class="field-label" for="ipPortInput">Port</label>
+          <input type="text" id="ipPortInput" value="8080" placeholder="8080" />
+        </div>
       </div>
       <div>
-        <label class="field-label" for="ipCustomInput">Custom URL or File Path for Camera <span id="ipSlotNum">1</span></label>
+        <label class="field-label" for="ipCustomInput">Or Full Stream URL (HTTP / RTSP / Webcam Index)</label>
         <div style="display:flex; gap:6px;">
           <input type="text" id="ipCustomInput" placeholder="http://192.168.1.X:8080/video" />
-          <button class="btn-primary" onclick="saveIpCustom()">Apply</button>
+          <button class="btn-primary" onclick="saveIpCustom()">🔗 Connect</button>
         </div>
       </div>
       <div style="border-top:1px solid var(--border); padding-top:10px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
@@ -1334,12 +1558,12 @@
   <div id="pcBrowserModal" class="modal-backdrop" onclick="if(event.target===this) closePcBrowser()">
     <div class="modal-card" style="max-width:620px;">
       <div class="card-head">
-        <strong>📂 Browse Host PC Videos (0 MB Upload) — Camera <span id="pcSlotNum">1</span></strong>
+        <strong>📂 Browse Host Media Folders (0 MB Upload) — Camera <span id="pcSlotNum">1</span></strong>
         <button class="btn-ghost btn-xs" onclick="closePcBrowser()">✕ Close</button>
       </div>
       <div style="display:flex; align-items:center; gap:6px;">
         <button class="btn-ghost btn-xs" id="pcUpBtn" onclick="pcBrowseParent()">⬆ Up</button>
-        <button class="btn-ghost btn-xs" onclick="loadPcDir('')">🏠 Drives</button>
+        <button class="btn-ghost btn-xs" onclick="loadPcDir('')">🏠 Media Folders</button>
         <span id="pcCurPath" class="tabular" style="font-size:11px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;"></span>
       </div>
       <div id="pcDirList" style="display:flex; flex-direction:column; gap:5px; max-height:55dvh; overflow-y:auto; padding-right:2px;"></div>
@@ -1351,8 +1575,11 @@
   <script>
     // ── Global App State ─────────────────────────────────────────────
     let appState = null;
-    let focusSlot = null;          // null = 2x2 Grid, 0..3 = Single Focus
+    let centerMode = 'grid';       // 'grid' | 'cam0'..'cam3' | 'spotlight' | 'map'
+    let lastVideoMode = 'grid';
     let lowBandwidthMode = false;  // false = MJPEG streams, true = frame polling
+    let authRequired = false;
+    let isAuthenticated = true;
     let uploadTargetSlot = 0;
     let uploadForceFullMode = false;
     let ipModalSlot = 0;
@@ -1361,16 +1588,36 @@
     let photoUploadAppend = false;
     let pollTimer = null;
     let snapTimer = null;
+    let mapAnimRaf = null;
+    let lastMapRafTs = 0;
     let radarAnimPhase = 0;
+    let tracerSegIdx = 0;
+    let tracerT = 0.0;
+    let tracerPaused = false;
+    let tracerSpeedMult = 1.0;
+    let tracerHoldFrames = 0;
     let blueprintImg = null;
     let lastBlueprintFlag = false;
-    let dragInfo = null;           // { camIdx, mode: 'move'|'angle' }
+    let dragInfo = null;           // { camIdx, mode: 'move'|'angle'|'open_full', startX, startY, moved, changed }
+    let mapEditEpoch = 0;
+    let mapSaveInFlight = 0;
+    const mapPinLockUntil = [0, 0, 0, 0];
     let browserWs = null;
     let browserWsRetryTimer = null;
     const browserSlots = [null, null, null, null];
+    const feedRetryTimers = [null, null, null, null];
 
     const slotCardDOM = [];
     let slotsInitialized = false;
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
 
     // ── Toast Utility ────────────────────────────────────────────────
     function showToast(msg, kind = 'ok') {
@@ -1382,12 +1629,128 @@
       setTimeout(() => { el.remove(); }, 3400);
     }
 
+    // ── Auth Gate & Session Management ───────────────────────────────
+    function showAuthGate(errText = '') {
+      isAuthenticated = false;
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (snapTimer) { clearInterval(snapTimer); snapTimer = null; }
+      for (let i = 0; i < 4; i++) {
+        const img = document.getElementById(`feedImg${i}`);
+        if (img) {
+          img.removeAttribute('src');
+          img.dataset.activeUrl = '';
+          img.style.display = 'none';
+        }
+      }
+      if (browserWs) {
+        try { browserWs.close(); } catch {}
+        browserWs = null;
+      }
+      const gate = document.getElementById('authGate');
+      const errEl = document.getElementById('authErrMsg');
+      if (errText) {
+        errEl.textContent = errText;
+        errEl.style.display = 'block';
+      } else {
+        errEl.style.display = 'none';
+      }
+      gate.classList.add('open');
+      setTimeout(() => {
+        const inp = document.getElementById('authPassInput');
+        if (inp) inp.focus();
+      }, 60);
+    }
+
+    function startBackgroundPolling() {
+      if (!pollTimer) pollTimer = setInterval(fetchState, 400);
+      if (!snapTimer) snapTimer = setInterval(pollSnapshotFrames, 450);
+    }
+
+    async function checkAuthAndBoot() {
+      buildSlotCards();
+      attachFeedErrorHandlers();
+      attachRadarPointerHandlers(document.getElementById('radarCanvas'), true);
+      attachRadarPointerHandlers(document.getElementById('fullMapCanvas'), false);
+      try {
+        const res = await fetch('/api/auth/status', { cache: 'no-store', credentials: 'same-origin' });
+        const st = await res.json().catch(() => ({}));
+        authRequired = !!st.auth_required;
+        isAuthenticated = st.authenticated !== false;
+        document.getElementById('logoutBtn').style.display = authRequired ? 'inline-flex' : 'none';
+        if (authRequired && !isAuthenticated) {
+          showAuthGate();
+          return;
+        }
+      } catch {
+        // Fallback to fetchState
+      }
+      document.getElementById('authGate').classList.remove('open');
+      await fetchState();
+      startBackgroundPolling();
+      startMapAnimLoop();
+    }
+
+    async function submitPasscode(ev) {
+      if (ev) ev.preventDefault();
+      const inp = document.getElementById('authPassInput');
+      const btn = document.getElementById('authSubmitBtn');
+      const errEl = document.getElementById('authErrMsg');
+      const code = (inp.value || '').trim();
+      if (!code) return;
+      btn.disabled = true;
+      btn.textContent = 'Verifying...';
+      errEl.style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ passcode: code }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          errEl.textContent = data.error || `Access denied (HTTP ${res.status})`;
+          errEl.style.display = 'block';
+          return;
+        }
+        isAuthenticated = true;
+        authRequired = true;
+        inp.value = '';
+        document.getElementById('authGate').classList.remove('open');
+        document.getElementById('logoutBtn').style.display = 'inline-flex';
+        showToast('🔓 Console unlocked');
+        await fetchState();
+        startBackgroundPolling();
+        startMapAnimLoop();
+        if (browserSlots.some(Boolean)) connectBrowserWs();
+        updateFeedStreams(true);
+      } catch (e) {
+        errEl.textContent = e.message || 'Connection error';
+        errEl.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🔓 Unlock Console';
+      }
+    }
+
+    async function logoutSession() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+      } catch {}
+      showAuthGate('Session locked.');
+    }
+
     // ── HTTP Helpers ─────────────────────────────────────────────────
     async function apiJson(url, opts = {}) {
       const res = await fetch(url, {
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
         ...opts,
       });
+      if (res.status === 401) {
+        showAuthGate('Session expired or passcode required.');
+        throw new Error('Authentication required');
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
         throw new Error(data.error || `HTTP ${res.status}`);
@@ -1398,6 +1761,7 @@
     function uploadWithProgress(url, formData, labelText, onDone) {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', url, true);
+      xhr.withCredentials = true;
       let toastEl = null;
       xhr.upload.onprogress = (e) => {
         if (!toastEl) {
@@ -1410,6 +1774,11 @@
       };
       xhr.onload = () => {
         if (toastEl) toastEl.remove();
+        if (xhr.status === 401) {
+          showAuthGate('Session expired or passcode required.');
+          onDone(new Error('Authentication required'));
+          return;
+        }
         let data = {};
         try { data = JSON.parse(xhr.responseText || '{}'); } catch {}
         if (xhr.status >= 200 && xhr.status < 300 && data.ok !== false) {
@@ -1442,6 +1811,7 @@
 
       if (which === 'live') {
         colCenter.classList.add('mobile-active');
+        if (centerMode === 'map') setTimeout(drawAllMaps, 40);
       } else if (which === 'target') {
         colLeft.classList.add('mobile-active');
         switchSetupTab('target');
@@ -1450,7 +1820,7 @@
         switchSetupTab('cams');
       } else if (which === 'map') {
         colRight.classList.add('mobile-active');
-        setTimeout(drawRadarMap, 40);
+        setTimeout(drawAllMaps, 40);
       }
 
       document.getElementById('mobNavLive').classList.toggle('active', which === 'live');
@@ -1464,7 +1834,7 @@
       const right = document.getElementById('colRight');
       right.classList.toggle('tablet-active');
       if (right.classList.contains('tablet-active')) {
-        setTimeout(drawRadarMap, 40);
+        setTimeout(drawAllMaps, 40);
       }
     }
 
@@ -1494,12 +1864,12 @@
           </div>
           <div class="row-2">
             <button class="btn-blue btn-xs" onclick="pickSlotVideo(${i}, false)" title="Open phone/laptop video instantly with 0 MB pre-upload">⚡ Instant Video</button>
-            <button class="btn-ghost btn-xs pc-browse-btn" id="pcBrowseBtn${i}" onclick="openPcBrowser(${i})" title="Pick video already on host PC disk with 0 transfer">📂 Browse PC</button>
+            <button class="btn-ghost btn-xs pc-browse-btn" id="pcBrowseBtn${i}" onclick="openPcBrowser(${i})" title="Pick video already on host media disk with 0 transfer">📂 Browse PC</button>
           </div>
           <div>
             <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
               <label class="field-label" for="slotSource${i}" style="margin:0;">Source (0, URL, PC path, or Instant)</label>
-              <button class="btn-ghost btn-xs" style="padding:2px 6px; font-size:10px;" onclick="openIpHelp(${i})">📱 IP / Upload</button>
+              <button class="btn-ghost btn-xs" style="padding:2px 6px; font-size:10px;" onclick="openIpHelp(${i})">📱 Phone / Upload</button>
             </div>
             <input type="text" id="slotSource${i}" style="margin-top:3px;" placeholder="Pick Instant Video, Browse PC, or enter 0 / RTSP" onchange="configureSlot(${i})" />
           </div>
@@ -1546,7 +1916,7 @@
           body: JSON.stringify({
             tracking_mode: mode,
             target_name: document.getElementById('targetNameInput').value.trim() || 'Target Person',
-            class_name: document.getElementById('classNameInput').value.trim() || 'person',
+            class_name: document.getElementById('classNameInput').value.trim() || 'dog',
             sensitivity: currentSensitivity(),
           }),
         });
@@ -1576,7 +1946,7 @@
           method: 'POST',
           body: JSON.stringify({
             target_name: document.getElementById('targetNameInput').value.trim() || 'Target Person',
-            class_name: document.getElementById('classNameInput').value.trim() || 'person',
+            class_name: document.getElementById('classNameInput').value.trim() || 'dog',
           }),
         });
         await fetchState();
@@ -1756,6 +2126,7 @@
 
     // ── Browser On-Demand Video Frame Feeder (Zero Full Pre-Upload) ──
     function connectBrowserWs() {
+      if (authRequired && !isAuthenticated) return;
       if (browserWs && (browserWs.readyState === WebSocket.OPEN || browserWs.readyState === WebSocket.CONNECTING)) {
         return;
       }
@@ -1771,8 +2142,12 @@
             }
           } catch {}
         };
-        browserWs.onclose = () => {
+        browserWs.onclose = (ev) => {
           browserWs = null;
+          if (ev && ev.code === 4401) {
+            showAuthGate('Session expired or passcode required.');
+            return;
+          }
           if (!browserWsRetryTimer && browserSlots.some(Boolean)) {
             browserWsRetryTimer = setTimeout(() => {
               browserWsRetryTimer = null;
@@ -1880,9 +2255,14 @@
           } else {
             const resp = await fetch(`/api/slot/${slotId}/push_frame?seq=${req.seq}`, {
               method: 'POST',
+              credentials: 'same-origin',
               headers: { 'Content-Type': 'image/jpeg' },
               body: ab,
             });
+            if (resp.status === 401) {
+              showAuthGate('Session expired or passcode required.');
+              return;
+            }
             if (resp.ok) {
               const info = await resp.json().catch(() => ({}));
               if (info.demand && info.demand.seq > st.lastDeliveredSeq) {
@@ -1898,10 +2278,10 @@
       }
     }
 
-    // ── Host PC Local File Browser Modal (0 MB Upload on LAN/Desktop) ─
+    // ── Host Media Directory Browser Modal (XSS-safe DOM) ────────────
     function openPcBrowser(slotId) {
       if (appState && appState.local_fs_enabled === false) {
-        return showToast('Cloud container mode — use ⚡ Instant Video to stream from your device!', 'err');
+        return showToast('Public web session — use ⚡ Instant Video to stream from your phone/PC!', 'err');
       }
       pcModalSlot = slotId;
       document.getElementById('pcSlotNum').textContent = String(slotId + 1);
@@ -1924,7 +2304,7 @@
           return showToast(res.reason || 'Host disk browsing unavailable', 'err');
         }
         pcParentPath = res.parent || '';
-        document.getElementById('pcCurPath').textContent = res.current || 'Select Drive or Quick Folder';
+        document.getElementById('pcCurPath').textContent = res.current || 'Select Allowed Media Folder';
         document.getElementById('pcUpBtn').disabled = !res.current;
 
         const items = res.items || [];
@@ -1961,7 +2341,12 @@
           listEl.appendChild(btn);
         }
       } catch (e) {
-        listEl.innerHTML = `<div style="padding:14px; color:#f87171;">${e.message}</div>`;
+        listEl.innerHTML = '';
+        const errDiv = document.createElement('div');
+        errDiv.style.padding = '14px';
+        errDiv.style.color = '#f87171';
+        errDiv.textContent = e.message || 'Failed to list folder';
+        listEl.appendChild(errDiv);
       }
     }
     async function selectPcVideo(slotId, fullPath, fileName) {
@@ -1977,10 +2362,10 @@
         }
       }
       await configureSlot(slotId);
-      showToast(`📂 Opened from PC disk (0 MB upload): ${fileName}`);
+      showToast(`📂 Opened from host disk (0 MB upload): ${fileName}`);
     }
 
-    // ── Playback & Speed Controls ────────────────────────────────────
+    // ── Explicit Playback Controls (Exact Parity with Desktop app.py) ─
     function selectedGlobalSpeed() {
       return appState?.config?.global_speed || '10x';
     }
@@ -1995,28 +2380,38 @@
       } catch (e) { showToast(e.message, 'err'); }
     }
 
-    async function toggleStartOrPause() {
+    async function startScan() {
+      if (appState?.is_running) return;
+      for (const [id, lbl] of [['topStartBtn', '⏳ Opening...'], ['sideStartBtn', '⏳ Opening Feeds...'], ['mobStartBtn', '⏳ Starting']]) {
+        const el = document.getElementById(id);
+        if (el) { el.textContent = lbl; el.disabled = true; }
+      }
       try {
-        if (appState && appState.is_running) {
-          await apiJson('/api/control/pause', { method: 'POST', body: '{}' });
-        } else {
-          for (let i = 0; i < 4; i++) {
-            if (browserSlots[i]) {
-              browserSlots[i].lastDeliveredSeq = -1;
-              browserSlots[i].latestWanted = null;
-            }
+        for (let i = 0; i < 4; i++) {
+          if (browserSlots[i]) {
+            browserSlots[i].lastDeliveredSeq = -1;
+            browserSlots[i].latestWanted = null;
           }
-          connectBrowserWs();
-          await apiJson('/api/control/start', {
-            method: 'POST',
-            body: JSON.stringify({ global_speed: selectedGlobalSpeed() }),
-          });
         }
+        connectBrowserWs();
+        await apiJson('/api/control/start', {
+          method: 'POST',
+          body: JSON.stringify({ global_speed: selectedGlobalSpeed() }),
+        });
         await fetchState();
         updateFeedStreams(true);
       } catch (e) {
         showToast(e.message, 'err');
+        await fetchState();
       }
+    }
+
+    async function togglePauseScan() {
+      try {
+        await apiJson('/api/control/pause', { method: 'POST', body: '{}' });
+        await fetchState();
+        updateFeedStreams();
+      } catch (e) { showToast(e.message, 'err'); }
     }
 
     async function stopScan() {
@@ -2027,24 +2422,90 @@
       } catch (e) { showToast(e.message, 'err'); }
     }
 
-    // ── Feed Grid, Focus & Stream Management ─────────────────────────
-    function setFocusSlot(slotId) {
-      focusSlot = slotId;
-      document.getElementById('feedGrid').classList.toggle('focus-mode', slotId !== null);
-      document.getElementById('viewGridBtn').classList.toggle('active', slotId === null);
-      for (let i = 0; i < 4; i++) {
-        document.getElementById(`viewFocus${i}`).classList.toggle('active', slotId === i);
-        const card = document.getElementById(`feedCard${i}`);
-        card.classList.toggle('hidden-slot', slotId !== null && slotId !== i);
+    // ── Center Viewport Modes (4-Grid, Cam 1-4, Spotlight, Full Map) ─
+    function resolveSpotlightIdx() {
+      if (!appState) return 0;
+      const slots = appState.slots || [];
+      const spottedIdx = slots.findIndex(s => s && s.spotted);
+      if (spottedIdx >= 0) return spottedIdx;
+      if (typeof appState.last_spotlight_idx === 'number' && appState.last_spotlight_idx >= 0 && appState.last_spotlight_idx < 4) {
+        return appState.last_spotlight_idx;
       }
+      const enabledIdx = slots.findIndex(s => s && s.enabled);
+      return enabledIdx >= 0 ? enabledIdx : 0;
+    }
+
+    function setCenterMode(mode) {
+      centerMode = mode || 'grid';
+      if (centerMode !== 'map') lastVideoMode = centerMode;
+
+      document.getElementById('viewGridBtn').classList.toggle('active', centerMode === 'grid');
+      for (let i = 0; i < 4; i++) {
+        document.getElementById(`viewFocus${i}`).classList.toggle('active', centerMode === `cam${i}`);
+      }
+      document.getElementById('viewSpotlightBtn').classList.toggle('active', centerMode === 'spotlight');
+      document.getElementById('viewMapBtn').classList.toggle('active', centerMode === 'map');
+
+      const mapQuick = document.getElementById('mapQuickBtn');
+      const isMap = centerMode === 'map';
+      mapQuick.textContent = isMap ? '📹 Back to Videos' : '🗺️ Full Map View';
+      mapQuick.className = isMap ? 'btn-primary btn-xs' : 'btn-blue btn-xs';
+
+      const gridEl = document.getElementById('feedGrid');
+      const fullMapEl = document.getElementById('fullMapView');
+      gridEl.style.display = isMap ? 'none' : 'grid';
+      fullMapEl.classList.toggle('active', isMap);
+
+      updateFeedCardVisibility();
       updateFeedStreams(true);
+      if (isMap) {
+        setTimeout(drawAllMaps, 25);
+      }
+    }
+
+    function toggleCenterMapView() {
+      if (centerMode === 'map') {
+        setCenterMode(lastVideoMode && lastVideoMode !== 'map' ? lastVideoMode : 'grid');
+      } else {
+        setCenterMode('map');
+      }
+    }
+
+    function updateFeedCardVisibility() {
+      const gridEl = document.getElementById('feedGrid');
+      if (centerMode === 'map') return;
+      if (centerMode === 'grid') {
+        gridEl.classList.remove('focus-mode');
+        for (let i = 0; i < 4; i++) {
+          document.getElementById(`feedCard${i}`).classList.remove('hidden-slot');
+        }
+        return;
+      }
+      const targetIdx = centerMode === 'spotlight'
+        ? resolveSpotlightIdx()
+        : Math.max(0, Math.min(3, Number(centerMode.slice(3)) || 0));
+      gridEl.classList.add('focus-mode');
+      for (let i = 0; i < 4; i++) {
+        document.getElementById(`feedCard${i}`).classList.toggle('hidden-slot', i !== targetIdx);
+      }
+    }
+
+    function isSlotVisibleInCenter(slotId) {
+      if (centerMode === 'map') return false;
+      if (centerMode === 'grid') return true;
+      if (centerMode === 'spotlight') return resolveSpotlightIdx() === slotId;
+      return centerMode === `cam${slotId}`;
+    }
+
+    function setFocusSlot(slotId) {
+      setCenterMode(slotId === null ? 'grid' : `cam${slotId}`);
     }
 
     function onFeedCardClick(slotId) {
-      if (focusSlot === slotId) {
-        setFocusSlot(null);
+      if (centerMode === `cam${slotId}`) {
+        setCenterMode('grid');
       } else {
-        setFocusSlot(slotId);
+        setCenterMode(`cam${slotId}`);
       }
     }
 
@@ -2056,18 +2517,42 @@
       updateFeedStreams(true);
     }
 
+    function attachFeedErrorHandlers() {
+      for (let i = 0; i < 4; i++) {
+        const img = document.getElementById(`feedImg${i}`);
+        if (!img || img.dataset.errWired) continue;
+        img.dataset.errWired = '1';
+        img.addEventListener('error', () => {
+          if (lowBandwidthMode || !appState || !appState.is_running) return;
+          const slot = appState.slots?.[i];
+          if (!slot || !slot.enabled || !isSlotVisibleInCenter(i)) return;
+          if (feedRetryTimers[i]) return;
+          feedRetryTimers[i] = setTimeout(() => {
+            feedRetryTimers[i] = null;
+            if (!lowBandwidthMode && appState?.is_running && appState.slots?.[i]?.enabled && isSlotVisibleInCenter(i)) {
+              img.src = `/api/stream/${i}?t=${Date.now()}`;
+            }
+          }, 1400);
+        });
+      }
+    }
+
     function updateFeedStreams(forceReload = false) {
       if (!appState) return;
+      if (authRequired && !isAuthenticated) return;
       const running = appState.is_running;
       for (let i = 0; i < 4; i++) {
         const s = appState.slots[i];
         const img = document.getElementById(`feedImg${i}`);
         const ph = document.getElementById(`feedPh${i}`);
-        const card = document.getElementById(`feedCard${i}`);
-        const visible = focusSlot === null || focusSlot === i;
+        const visible = isSlotVisibleInCenter(i);
         const shouldStream = running && s.enabled && visible;
 
         if (!shouldStream) {
+          if (feedRetryTimers[i]) {
+            clearTimeout(feedRetryTimers[i]);
+            feedRetryTimers[i] = null;
+          }
           if (img.dataset.activeUrl) {
             img.removeAttribute('src');
             img.dataset.activeUrl = '';
@@ -2098,17 +2583,17 @@
 
     function pollSnapshotFrames() {
       if (!appState || !appState.is_running || !lowBandwidthMode) return;
+      if (authRequired && !isAuthenticated) return;
       for (let i = 0; i < 4; i++) {
         const s = appState.slots[i];
-        const visible = focusSlot === null || focusSlot === i;
-        if (s.enabled && visible) {
+        if (s.enabled && isSlotVisibleInCenter(i)) {
           const img = document.getElementById(`feedImg${i}`);
           img.src = `/api/frame/${i}?t=${Date.now()}`;
         }
       }
     }
 
-    // ── Modals & Helpers ─────────────────────────────────────────────
+    // ── Modals & Phone Camera Connector ──────────────────────────────
     function openLightbox(src, title = 'Sighting Snapshot') {
       document.getElementById('lightboxTitle').textContent = title;
       document.getElementById('lightboxImg').src = src;
@@ -2118,10 +2603,62 @@
       document.getElementById('lightboxModal').classList.remove('open');
     }
 
+    function openFlowchartModal() {
+      const text = appState?.tracker?.formatted_journey || 'No target sightings recorded yet.';
+      document.getElementById('flowchartPre').textContent = text;
+      document.getElementById('flowchartModal').classList.add('open');
+    }
+    function closeFlowchartModal() {
+      document.getElementById('flowchartModal').classList.remove('open');
+    }
+
+    let selectedPhoneKind = 'ip_webcam';
+    function selectPhoneApp(kind) {
+      selectedPhoneKind = kind;
+      document.getElementById('ipAppIpWebcam').classList.toggle('active', kind === 'ip_webcam');
+      document.getElementById('ipAppDroidcam').classList.toggle('active', kind === 'droidcam');
+      document.getElementById('ipAppWebcam0').classList.toggle('active', kind === 'webcam0');
+      const hostEl = document.getElementById('ipHostInput');
+      const portEl = document.getElementById('ipPortInput');
+      const customEl = document.getElementById('ipCustomInput');
+      if (kind === 'webcam0') {
+        customEl.value = '0';
+      } else {
+        portEl.value = kind === 'droidcam' ? '4747' : '8080';
+        const ip = (hostEl.value || '').trim();
+        if (ip && !ip.endsWith('.')) {
+          customEl.value = `http://${ip}:${portEl.value.trim() || '8080'}/video`;
+        }
+      }
+    }
+
+    function syncPhoneUrlPreview() {
+      if (selectedPhoneKind === 'webcam0') return;
+      const ip = (document.getElementById('ipHostInput').value || '').trim();
+      const port = (document.getElementById('ipPortInput').value || '8080').trim();
+      if (ip && !ip.endsWith('.')) {
+        document.getElementById('ipCustomInput').value = `http://${ip}:${port}/video`;
+      }
+    }
+    document.getElementById('ipHostInput').addEventListener('input', syncPhoneUrlPreview);
+    document.getElementById('ipPortInput').addEventListener('input', syncPhoneUrlPreview);
+
     function openIpHelp(slotId) {
       ipModalSlot = slotId;
       document.getElementById('ipSlotNum').textContent = String(slotId + 1);
-      document.getElementById('ipCustomInput').value = slotCardDOM[slotId]?.source.value || '';
+      const curSrc = slotCardDOM[slotId]?.source.value || '';
+      document.getElementById('ipCustomInput').value = curSrc;
+      const m = curSrc.match(/^https?:\/\/([^:/]+):(\d+)/i);
+      if (m) {
+        document.getElementById('ipHostInput').value = m[1];
+        document.getElementById('ipPortInput').value = m[2];
+        selectPhoneApp(m[2] === '4747' ? 'droidcam' : 'ip_webcam');
+        document.getElementById('ipCustomInput').value = curSrc;
+      } else if (curSrc.trim() === '0') {
+        selectPhoneApp('webcam0');
+      } else {
+        selectPhoneApp('ip_webcam');
+      }
       document.getElementById('ipHelpModal').classList.add('open');
     }
     function closeIpHelp() {
@@ -2131,14 +2668,25 @@
       document.getElementById('ipCustomInput').value = val;
     }
     async function saveIpCustom() {
-      const val = document.getElementById('ipCustomInput').value.trim();
+      let val = document.getElementById('ipCustomInput').value.trim();
+      if (!val) {
+        const ip = document.getElementById('ipHostInput').value.trim();
+        const port = document.getElementById('ipPortInput').value.trim() || '8080';
+        if (ip && !ip.endsWith('.')) {
+          val = `http://${ip}:${port}/video`;
+        }
+      }
+      if (!val) {
+        return showToast('Enter a valid IP / Stream URL or 0 for USB webcam', 'err');
+      }
       const d = slotCardDOM[ipModalSlot];
       if (!d) return;
       if (!val.startsWith('browser://')) cleanupBrowserSlot(ipModalSlot);
       d.source.value = val;
-      if (val) d.enabled.checked = true;
+      d.enabled.checked = true;
       closeIpHelp();
       await configureSlot(ipModalSlot);
+      showToast(`🔗 Connected CAM ${ipModalSlot + 1} source: ${val}`);
     }
 
     // ── Tracker & Exports ────────────────────────────────────────────
@@ -2149,15 +2697,28 @@
       window.location.href = `/api/tracker/export/${fmt}`;
     }
 
+    async function exportBothReports() {
+      if (!appState || !appState.tracker.total_sightings) {
+        return showToast('No sightings logged yet to export', 'err');
+      }
+      try {
+        const res = await apiJson('/api/tracker/export/both', { method: 'POST', body: '{}' });
+        showToast(`✅ Exported CSV & JSON logs (${res.csv_name})`);
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
     async function clearTrackerLog() {
       try {
         await apiJson('/api/tracker/clear', { method: 'POST', body: '{}' });
+        tracerSegIdx = 0;
+        tracerT = 0.0;
+        tracerHoldFrames = 0;
         showToast('Cleared timeline log');
         await fetchState();
       } catch (e) { showToast(e.message, 'err'); }
     }
 
-    // ── Radar Map Controls & PointerEvents Canvas ────────────────────
+    // ── Radar Map Controls, MapVisualizer 2.5 & Pointer Events ───────
     async function toggleFovCones() {
       try {
         await apiJson('/api/map/config', {
@@ -2170,23 +2731,31 @@
 
     async function resetRadarMap() {
       try {
-        await apiJson('/api/map/reset', { method: 'POST', body: '{}' });
-        showToast('Radar map pins reset');
+        mapEditEpoch++;
+        mapPinLockUntil.fill(0);
+        const res = await apiJson('/api/map/reset', { method: 'POST', body: '{}' });
         await fetchState();
+        showToast('Radar map pins reset');
       } catch (e) { showToast(e.message, 'err'); }
     }
 
-    function pickBlueprint() {
-      if (appState?.map?.has_blueprint) {
+    async function clearBlueprint() {
+      const fd = new FormData();
+      fd.append('clear', 'true');
+      uploadWithProgress('/api/map/blueprint', fd, 'Clearing floorplan', async (err) => {
+        if (err) return showToast(err.message, 'err');
+        blueprintImg = null;
+        lastBlueprintFlag = false;
+        showToast('Reverted to architectural radar grid');
+        await fetchState();
+        drawAllMaps();
+      });
+    }
+
+    function pickBlueprint(askClearIfHas = true) {
+      if (askClearIfHas && appState?.map?.has_blueprint) {
         if (confirm('Clear custom floorplan and revert to architectural radar grid? (Cancel to upload a different floorplan)')) {
-          const fd = new FormData();
-          fd.append('clear', 'true');
-          uploadWithProgress('/api/map/blueprint', fd, 'Clearing floorplan', async (err) => {
-            if (err) return showToast(err.message, 'err');
-            blueprintImg = null;
-            lastBlueprintFlag = false;
-            await fetchState();
-          });
+          clearBlueprint();
           return;
         }
       }
@@ -2210,13 +2779,136 @@
 
     function loadBlueprintImage() {
       const img = new Image();
-      img.onload = () => { blueprintImg = img; drawRadarMap(); };
+      img.onload = () => { blueprintImg = img; drawAllMaps(); };
       img.onerror = () => { blueprintImg = null; };
       img.src = `/api/map/blueprint?t=${Date.now()}`;
     }
 
-    function drawRadarMap() {
-      const canvas = document.getElementById('radarCanvas');
+    function getRouteSegments() {
+      const route = appState?.tracker?.journey_route || [];
+      const segs = [];
+      const pairCounts = {};
+      for (let k = 1; k < route.length; k++) {
+        const a = route[k - 1];
+        const b = route[k];
+        if (a.camera_id === b.camera_id) continue;
+        const fwdKey = `${a.camera_id}->${b.camera_id}`;
+        const revKey = `${b.camera_id}->${a.camera_id}`;
+        const count = pairCounts[fwdKey] || 0;
+        const hasRev = (pairCounts[revKey] || 0) > 0;
+        pairCounts[fwdKey] = count + 1;
+        segs.push({
+          hopNum: k,
+          fromId: a.camera_id,
+          toId: b.camera_id,
+          fromLabel: a.camera || `Camera ${a.camera_id + 1}`,
+          toLabel: b.camera || `Camera ${b.camera_id + 1}`,
+          videoTime: b.video_time || '--:--',
+          isReturn: !!b.is_return || hasRev,
+          repeatIdx: count,
+        });
+      }
+      return segs;
+    }
+
+    function toggleMapPlayback() {
+      tracerPaused = !tracerPaused;
+      const btn = document.getElementById('mapPlayBtn');
+      if (btn) btn.textContent = tracerPaused ? '▶ Play' : '⏸ Pause';
+      drawAllMaps();
+    }
+
+    function stepMapBackward() {
+      const segs = getRouteSegments();
+      if (!segs.length) return;
+      tracerPaused = true;
+      tracerSegIdx = (tracerSegIdx - 1 + segs.length) % segs.length;
+      tracerT = 0.5;
+      const btn = document.getElementById('mapPlayBtn');
+      if (btn) btn.textContent = '▶ Play';
+      drawAllMaps();
+    }
+
+    function stepMapForward() {
+      const segs = getRouteSegments();
+      if (!segs.length) return;
+      tracerPaused = true;
+      tracerSegIdx = (tracerSegIdx + 1) % segs.length;
+      tracerT = 0.5;
+      const btn = document.getElementById('mapPlayBtn');
+      if (btn) btn.textContent = '▶ Play';
+      drawAllMaps();
+    }
+
+    function setMapTracerSpeed(mult) {
+      tracerSpeedMult = mult;
+      document.getElementById('mapSpd05')?.classList.toggle('active', mult === 0.5);
+      document.getElementById('mapSpd10')?.classList.toggle('active', mult === 1.0);
+      document.getElementById('mapSpd20')?.classList.toggle('active', mult === 2.0);
+    }
+
+    function evalQuadBezier(p0, cp, p1, t) {
+      const u = 1 - t;
+      const x = u * u * p0[0] + 2 * u * t * cp[0] + t * t * p1[0];
+      const y = u * u * p0[1] + 2 * u * t * cp[1] + t * t * p1[1];
+      const dx = 2 * u * (cp[0] - p0[0]) + 2 * t * (p1[0] - cp[0]);
+      const dy = 2 * u * (cp[1] - p0[1]) + 2 * t * (p1[1] - cp[1]);
+      return { x, y, ang: Math.atan2(dy, dx) };
+    }
+
+    function computeCurveControlPoint(p0, p1, seg, isMini) {
+      const mx = (p0[0] + p1[0]) * 0.5;
+      const my = (p0[1] + p1[1]) * 0.5;
+      const vx = p1[0] - p0[0];
+      const vy = p1[1] - p0[1];
+      const len = Math.hypot(vx, vy) || 1;
+      const nx = -vy / len;
+      const ny = vx / len;
+      const sign = seg.isReturn ? -1 : 1;
+      const mag = (isMini ? 15 : 26) * (seg.repeatIdx + 1);
+      return [mx + nx * sign * mag, my + ny * sign * mag];
+    }
+
+    function drawPill(ctx, text, cx, cy, fill, stroke, textColor = '#fff', font = '700 10px system-ui, sans-serif') {
+      ctx.save();
+      ctx.font = font;
+      const padX = 7;
+      const w = Math.ceil(ctx.measureText(text).width + padX * 2);
+      const h = 17;
+      const rx = cx - w / 2;
+      const ry = cy - h / 2;
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(rx, ry, w, h, 5);
+      else ctx.rect(rx, ry, w, h);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = textColor;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, cx, cy + 0.5);
+      ctx.restore();
+    }
+
+    function drawChevron(ctx, x, y, angle, size, color) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-size, -size * 0.72);
+      ctx.lineTo(size * 0.35, 0);
+      ctx.lineTo(-size, size * 0.72);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawMapCanvas(canvas, isMini) {
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       if (rect.width < 20 || rect.height < 20) return;
@@ -2236,32 +2928,80 @@
       const ch = rect.height;
 
       // Background
-      ctx.fillStyle = '#070b12';
+      ctx.fillStyle = isMini ? '#070b12' : '#0a0b16';
       ctx.fillRect(0, 0, cw, ch);
 
       if (blueprintImg && appState?.map?.has_blueprint) {
-        ctx.globalAlpha = 0.78;
-        ctx.drawImage(blueprintImg, 0, 0, cw, ch);
+        const iw = blueprintImg.naturalWidth || blueprintImg.width || cw;
+        const ih = blueprintImg.naturalHeight || blueprintImg.height || ch;
+        const fitScale = Math.min(cw / iw, ch / ih);
+        const dw = iw * fitScale;
+        const dh = ih * fitScale;
+        const ox = (cw - dw) * 0.5;
+        const oy = (ch - dh) * 0.5;
+        ctx.globalAlpha = isMini ? 0.80 : 0.86;
+        ctx.drawImage(blueprintImg, ox, oy, dw, dh);
         ctx.globalAlpha = 1;
+        ctx.fillStyle = 'rgba(7, 10, 18, 0.25)';
+        ctx.fillRect(0, 0, cw, ch);
       } else {
-        // Subtle architectural grid
-        ctx.strokeStyle = 'rgba(51, 65, 85, 0.28)';
+        // Subtle architectural blueprint grid
+        ctx.strokeStyle = isMini ? 'rgba(51, 65, 85, 0.24)' : 'rgba(37, 48, 72, 0.42)';
         ctx.lineWidth = 1;
-        const step = 28;
+        const step = isMini ? 26 : 36;
         for (let x = step; x < cw; x += step) {
           ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke();
         }
         for (let y = step; y < ch; y += step) {
           ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke();
         }
-        // DORI concentric radar rings
-        const cx = cw / 2, cy = ch / 2;
-        const maxR = Math.min(cw, ch) * 0.44;
-        const rings = [0.3, 0.55, 0.8, 1.0];
-        ctx.strokeStyle = 'rgba(16, 185, 129, 0.16)';
+
+        // Architectural Zone Cards + Corridors (matching MapVisualizer 2.5)
+        const zoneDefs = [
+          { code: 'ZONE A', u: 0.22, v: 0.28 },
+          { code: 'ZONE B', u: 0.78, v: 0.28 },
+          { code: 'ZONE C', u: 0.78, v: 0.72 },
+          { code: 'ZONE D', u: 0.22, v: 0.72 },
+        ];
+        // Connecting corridors
+        ctx.strokeStyle = 'rgba(30, 41, 59, 0.55)';
+        ctx.lineWidth = isMini ? 6 : 12;
+        ctx.beginPath();
+        ctx.moveTo(cw * 0.22, ch * 0.28);
+        ctx.lineTo(cw * 0.78, ch * 0.28);
+        ctx.lineTo(cw * 0.78, ch * 0.72);
+        ctx.lineTo(cw * 0.22, ch * 0.72);
+        ctx.closePath();
+        ctx.stroke();
+
+        const boxW = cw * 0.34;
+        const boxH = ch * 0.32;
+        zoneDefs.forEach((z) => {
+          const zx = z.u * cw - boxW * 0.5;
+          const zy = z.v * ch - boxH * 0.5;
+          ctx.fillStyle = 'rgba(17, 23, 39, 0.65)';
+          ctx.strokeStyle = 'rgba(51, 65, 85, 0.42)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.fillRect(zx, zy, boxW, boxH);
+          ctx.strokeRect(zx, zy, boxW, boxH);
+          ctx.setLineDash([]);
+          if (!isMini) {
+            ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
+            ctx.font = '700 9px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(z.code, zx + 6, zy + 5);
+          }
+        });
+
+        // Concentric center radar rings
+        const rcx = cw * 0.5, rcy = ch * 0.5;
+        const maxR = Math.min(cw, ch) * 0.42;
+        ctx.strokeStyle = 'rgba(16, 185, 129, 0.14)';
         ctx.setLineDash([4, 4]);
-        for (const f of rings) {
-          ctx.beginPath(); ctx.arc(cx, cy, maxR * f, 0, Math.PI * 2); ctx.stroke();
+        for (const f of [0.35, 0.68, 1.0]) {
+          ctx.beginPath(); ctx.arc(rcx, rcy, maxR * f, 0, Math.PI * 2); ctx.stroke();
         }
         ctx.setLineDash([]);
       }
@@ -2271,128 +3011,351 @@
       const positions = appState.map.node_positions || [];
       const angles = appState.map.node_angles || [];
       const showFov = appState.map.show_fov_cones;
-      const fovSpan = (appState.map.fov_span_deg || 75) * Math.PI / 180;
+      const fovSpan = (appState.map.fov_span_deg || 70) * Math.PI / 180;
       const slots = appState.slots || [];
       const lk = appState.tracker?.last_known || {};
       const activeCamId = lk.camera_id;
       const route = appState.tracker?.journey_route || [];
-
+      const segs = getRouteSegments();
       const pts = positions.map(([u, v]) => [u * cw, v * ch]);
 
-      // Journey Route Path
-      if (route.length >= 2) {
-        ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 2.5;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        route.forEach((step, idx) => {
-          const cid = step.camera_id;
-          if (!pts[cid]) return;
-          const [px, py] = pts[cid];
-          if (idx === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // FOV Cones
+      // 1. 70° DORI Concentric FOV Cones
       if (showFov) {
-        const coneR = Math.min(cw, ch) * 0.30;
+        const coneR = Math.min(cw, ch) * (isMini ? 0.30 : 0.29);
         for (let i = 0; i < 4; i++) {
           if (!pts[i] || !slots[i]) continue;
           const [px, py] = pts[i];
           const rad = (angles[i] || 0) * Math.PI / 180;
-          const isSpotted = slots[i].spotted;
-          const isEnabled = slots[i].enabled;
+          const startA = rad - fovSpan * 0.5;
+          const endA = rad + fovSpan * 0.5;
+          const isSpotted = !!slots[i].spotted;
+          const isEnabled = !!slots[i].enabled;
 
-          ctx.beginPath();
-          ctx.moveTo(px, py);
-          ctx.arc(px, py, coneR, rad - fovSpan / 2, rad + fovSpan / 2);
-          ctx.closePath();
-
-          if (isSpotted) {
-            ctx.fillStyle = 'rgba(16, 185, 129, 0.28)';
-            ctx.strokeStyle = 'rgba(52, 211, 153, 0.8)';
-          } else if (isEnabled) {
-            ctx.fillStyle = 'rgba(59, 130, 246, 0.16)';
-            ctx.strokeStyle = 'rgba(96, 165, 250, 0.45)';
+          if (!isMini && isEnabled) {
+            // DORI 3-Zone Rings: DETECT (100%), RECOG (65%), ID (35%)
+            const bands = [
+              { frac: 1.0, fill: isSpotted ? 'rgba(255, 179, 0, 0.16)' : 'rgba(255, 179, 0, 0.08)', stroke: 'rgba(255, 179, 0, 0.38)' },
+              { frac: 0.65, fill: isSpotted ? 'rgba(0, 230, 118, 0.20)' : 'rgba(0, 230, 118, 0.10)', stroke: 'rgba(0, 230, 118, 0.45)' },
+              { frac: 0.35, fill: isSpotted ? 'rgba(0, 245, 255, 0.28)' : 'rgba(0, 245, 255, 0.14)', stroke: 'rgba(0, 245, 255, 0.62)' },
+            ];
+            for (const b of bands) {
+              ctx.beginPath();
+              ctx.moveTo(px, py);
+              ctx.arc(px, py, coneR * b.frac, startA, endA);
+              ctx.closePath();
+              ctx.fillStyle = b.fill;
+              ctx.strokeStyle = b.stroke;
+              ctx.lineWidth = 1;
+              ctx.fill();
+              ctx.stroke();
+            }
           } else {
-            ctx.fillStyle = 'rgba(100, 116, 139, 0.08)';
-            ctx.strokeStyle = 'rgba(100, 116, 139, 0.25)';
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.arc(px, py, coneR, startA, endA);
+            ctx.closePath();
+            ctx.fillStyle = isSpotted
+              ? 'rgba(0, 245, 255, 0.26)'
+              : (isEnabled ? 'rgba(59, 130, 246, 0.15)' : 'rgba(100, 116, 139, 0.07)');
+            ctx.strokeStyle = isSpotted
+              ? 'rgba(0, 245, 255, 0.85)'
+              : (isEnabled ? 'rgba(96, 165, 250, 0.45)' : 'rgba(100, 116, 139, 0.22)');
+            ctx.lineWidth = 1;
+            ctx.fill();
+            ctx.stroke();
           }
-          ctx.lineWidth = 1;
-          ctx.fill();
-          ctx.stroke();
+
+          // Animated active radar sweep ray when camera is actively spotting
+          if (isSpotted) {
+            const sweepFrac = 0.5 + 0.5 * Math.sin(radarAnimPhase * 1.4);
+            const sweepA = startA + (endA - startA) * sweepFrac;
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(px + Math.cos(sweepA) * coneR, py + Math.sin(sweepA) * coneR);
+            ctx.strokeStyle = 'rgba(0, 245, 255, 0.85)';
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+          }
         }
       }
 
-      // Camera Pins + Aim Dots
-      radarAnimPhase = (radarAnimPhase + 0.09) % (Math.PI * 2);
+      // 2. Dual Overlap Zone Purple Bridge
+      const spottedIds = [0, 1, 2, 3].filter(i => slots[i]?.spotted);
+      if (spottedIds.length >= 2 || (lk.is_overlap && (lk.overlap_cameras?.length || 0) >= 2)) {
+        let idxA = spottedIds[0], idxB = spottedIds[1];
+        if (idxA === undefined && Array.isArray(lk.overlap_cameras)) {
+          idxA = slots.findIndex(s => s?.location === lk.overlap_cameras[0]);
+          idxB = slots.findIndex(s => s?.location === lk.overlap_cameras[1]);
+        }
+        if (idxA >= 0 && idxB >= 0 && pts[idxA] && pts[idxB]) {
+          const [x1, y1] = pts[idxA];
+          const [x2, y2] = pts[idxB];
+          ctx.save();
+          ctx.strokeStyle = 'rgba(224, 64, 251, 0.35)';
+          ctx.lineWidth = isMini ? 6 : 10;
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+          ctx.strokeStyle = '#e040fb';
+          ctx.lineWidth = 2.2;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+          if (!isMini) {
+            drawPill(ctx, '🤝 DUAL OVERLAP ZONE', (x1 + x2) * 0.5, (y1 + y2) * 0.5 - 12, 'rgba(88, 28, 135, 0.92)', '#e040fb', '#f5d0fe', '700 10px system-ui, sans-serif');
+          }
+        }
+      }
+
+      // 3. Bidirectional Curved Rapido Bezier Routes
+      if (segs.length > 0) {
+        segs.forEach((seg, sIdx) => {
+          const p0 = pts[seg.fromId];
+          const p1 = pts[seg.toId];
+          if (!p0 || !p1) return;
+          const cp = computeCurveControlPoint(p0, p1, seg, isMini);
+          const color = seg.isReturn ? '#ffb300' : '#00f5ff';
+          const glow = seg.isReturn ? 'rgba(255, 179, 0, 0.25)' : 'rgba(0, 245, 255, 0.25)';
+          const isCurrent = sIdx === Math.min(tracerSegIdx, segs.length - 1);
+
+          // Soft glow
+          ctx.beginPath();
+          ctx.moveTo(p0[0], p0[1]);
+          ctx.quadraticCurveTo(cp[0], cp[1], p1[0], p1[1]);
+          ctx.strokeStyle = glow;
+          ctx.lineWidth = isCurrent ? (isMini ? 5.5 : 8) : (isMini ? 3.5 : 5);
+          ctx.stroke();
+
+          // Core path
+          ctx.beginPath();
+          ctx.moveTo(p0[0], p0[1]);
+          ctx.quadraticCurveTo(cp[0], cp[1], p1[0], p1[1]);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = isCurrent ? (isMini ? 2.6 : 3.2) : (isMini ? 1.8 : 2.2);
+          ctx.stroke();
+
+          // Directional Chevrons
+          for (const tPos of [0.35, 0.65]) {
+            const q = evalQuadBezier(p0, cp, p1, tPos);
+            drawChevron(ctx, q.x, q.y, q.ang, isMini ? 4.2 : 5.5, '#ffffff');
+          }
+
+          // Hop N Badge at midpoint
+          const mid = evalQuadBezier(p0, cp, p1, 0.5);
+          if (!isMini) {
+            drawPill(ctx, `Hop ${seg.hopNum}: ${seg.videoTime}`, mid.x, mid.y, '#111827', color, color, '700 10px monospace');
+          } else {
+            drawPill(ctx, `${seg.hopNum}`, mid.x, mid.y, '#0f172a', color, '#fff', '700 9px monospace');
+          }
+        });
+
+        // Animated Yellow Comet Tracer + Ripple
+        const cIdx = Math.max(0, Math.min(tracerSegIdx, segs.length - 1));
+        const activeSeg = segs[cIdx];
+        const ap0 = pts[activeSeg.fromId];
+        const ap1 = pts[activeSeg.toId];
+        if (ap0 && ap1) {
+          const acp = computeCurveControlPoint(ap0, ap1, activeSeg, isMini);
+          for (let tail = 4; tail >= 1; tail--) {
+            const tt = Math.max(0, tracerT - tail * 0.045);
+            const pt = evalQuadBezier(ap0, acp, ap1, tt);
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, (isMini ? 3.5 : 4.8) * (1 - tail * 0.16), 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 234, 0, ${0.55 - tail * 0.11})`;
+            ctx.fill();
+          }
+          const head = evalQuadBezier(ap0, acp, ap1, tracerT);
+          ctx.beginPath();
+          ctx.arc(head.x, head.y, isMini ? 8 : 11, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 234, 0, 0.25)';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(head.x, head.y, isMini ? 4.2 : 5.6, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffea00';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.4;
+          ctx.fill();
+          ctx.stroke();
+
+          if (tracerT >= 0.90) {
+            const ripple = (tracerT - 0.90) * 10;
+            ctx.beginPath();
+            ctx.arc(ap1[0], ap1[1], (isMini ? 12 : 16) + ripple * 14, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(255, 234, 0, ${(1 - ripple) * 0.85})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          }
+        }
+      }
+
+      // 4. Camera Nodes, Aim Handles, Start/Target Pills
+      const startCamId = route.length > 0 ? route[0].camera_id : null;
+      const handleDist = isMini ? 23 : 34;
+      const nodeR = isMini ? 11 : 15;
+
       for (let i = 0; i < 4; i++) {
         if (!pts[i] || !slots[i]) continue;
         const [px, py] = pts[i];
         const rad = (angles[i] || 0) * Math.PI / 180;
-        const isSpotted = slots[i].spotted;
+        const isSpotted = !!slots[i].spotted;
         const isLast = activeCamId === i;
-        const isEnabled = slots[i].enabled;
+        const isEnabled = !!slots[i].enabled;
 
-        // Animated radar pulse for active / spotted camera
         if (isSpotted || isLast) {
-          const pulseR = 14 + Math.sin(radarAnimPhase) * 7 + 7;
+          const pulseR = nodeR + 4 + Math.sin(radarAnimPhase) * 6 + 6;
           ctx.beginPath();
           ctx.arc(px, py, pulseR, 0, Math.PI * 2);
-          ctx.strokeStyle = isSpotted ? 'rgba(16, 185, 129, 0.75)' : 'rgba(56, 189, 248, 0.55)';
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = isSpotted ? 'rgba(16, 185, 129, 0.85)' : 'rgba(0, 245, 255, 0.65)';
+          ctx.lineWidth = 2.2;
           ctx.stroke();
         }
 
-        // Aim handle dot (outer ring 22px away)
-        const ax = px + Math.cos(rad) * 22;
-        const ay = py + Math.sin(rad) * 22;
+        // Aiming handle arm + knob
+        const ax = px + Math.cos(rad) * handleDist;
+        const ay = py + Math.sin(rad) * handleDist;
         ctx.beginPath();
         ctx.moveTo(px, py);
         ctx.lineTo(ax, ay);
-        ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.82)';
+        ctx.lineWidth = 1.8;
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.arc(ax, ay, 4.5, 0, Math.PI * 2);
+        ctx.arc(ax, ay, isMini ? 4.2 : 5.5, 0, Math.PI * 2);
         ctx.fillStyle = '#f59e0b';
+        ctx.strokeStyle = '#111827';
+        ctx.lineWidth = 1.2;
         ctx.fill();
+        ctx.stroke();
 
         // Main node circle
         ctx.beginPath();
-        ctx.arc(px, py, 12, 0, Math.PI * 2);
+        ctx.arc(px, py, nodeR, 0, Math.PI * 2);
         ctx.fillStyle = isSpotted ? '#059669' : (isLast ? '#1d4ed8' : (isEnabled ? '#1e293b' : '#0f172a'));
         ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = isSpotted ? '#34d399' : (isEnabled ? '#60a5fa' : '#475569');
+        ctx.lineWidth = 2.2;
+        ctx.strokeStyle = isSpotted ? '#34d399' : (isLast ? '#00f5ff' : (isEnabled ? '#60a5fa' : '#475569'));
         ctx.stroke();
 
-        // Cam Label
         ctx.fillStyle = '#fff';
-        ctx.font = '700 10px system-ui, sans-serif';
+        ctx.font = `800 ${isMini ? 10 : 12}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`C${i + 1}`, px, py + 0.5);
 
-        // Location sublabel
-        const loc = (slots[i].location || '').slice(0, 14);
+        // Location sublabel with dark pill backing
+        const loc = (slots[i].location || `Camera ${i + 1}`).slice(0, isMini ? 14 : 22);
         if (loc) {
-          ctx.fillStyle = '#cbd5e1';
-          ctx.font = '600 9px system-ui, sans-serif';
-          ctx.fillText(loc, px, py + 19);
+          drawPill(ctx, loc, px, py + nodeR + 12, 'rgba(9, 13, 24, 0.88)', 'rgba(71, 85, 105, 0.6)', '#e2e8f0', `600 ${isMini ? 9 : 10}px system-ui, sans-serif`);
+        }
+
+        // START badge & TARGET badge
+        if (startCamId === i) {
+          drawPill(ctx, '🚩 START', px, py - nodeR - 12, '#065f46', '#34d399', '#ecfdf5', '800 9px system-ui, sans-serif');
+        }
+        if (isLast) {
+          const offsetY = startCamId === i ? -nodeR - 30 : -nodeR - 12;
+          drawPill(ctx, '📍 TARGET', px, py + offsetY, '#1e3a8a', '#00f5ff', '#f0f9ff', '800 9px system-ui, sans-serif');
+        }
+      }
+
+      // 5. Full Map HUD Bar + N/S Compass
+      if (!isMini) {
+        const targetLabel = appState.config?.tracking_mode === 'class'
+          ? (appState.config?.class_name || 'Target').toUpperCase()
+          : (appState.config?.target_name || 'Target Person');
+        const arrowSummary = appState.tracker?.route_arrow || 'Awaiting target sighting...';
+        ctx.fillStyle = 'rgba(10, 14, 24, 0.82)';
+        ctx.fillRect(10, 10, Math.min(cw - 20, 560), 26);
+        ctx.strokeStyle = 'rgba(0, 245, 255, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(10, 10, Math.min(cw - 20, 560), 26);
+        ctx.fillStyle = '#00f5ff';
+        ctx.font = '700 11px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const hudText = `🎯 ${targetLabel} | Hops: ${segs.length} | ${arrowSummary}`.slice(0, 74);
+        ctx.fillText(hudText, 18, 23);
+
+        // N/S Compass at bottom-right
+        const compX = cw - 34, compY = ch - 34;
+        ctx.beginPath();
+        ctx.arc(compX, compY, 18, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)';
+        ctx.lineWidth = 1.2;
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#f87171';
+        ctx.font = '800 9px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('N', compX, compY - 10);
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText('S', compX, compY + 11);
+        ctx.fillText('W  E', compX, compY + 0.5);
+      }
+
+      // Sync Trip Status step pill
+      const stepEl = document.getElementById('mapStepLabel');
+      if (stepEl) {
+        if (segs.length > 0) {
+          const cur = segs[Math.min(tracerSegIdx, segs.length - 1)];
+          stepEl.textContent = `Hop ${cur.hopNum}/${segs.length}: ${cur.fromLabel} → ${cur.toLabel} (${cur.videoTime})`;
+        } else if (route.length === 1) {
+          stepEl.textContent = `First Sighting: ${route[0].camera} (${route[0].video_time})`;
+        } else {
+          stepEl.textContent = appState.is_running ? 'Scanning active cameras...' : 'Trip Status: Standby';
         }
       }
 
       ctx.restore();
     }
 
-    // Interactive Pointer Dragging on Radar Canvas
-    (function setupRadarPointer() {
-      const canvas = document.getElementById('radarCanvas');
+    function drawAllMaps() {
+      drawMapCanvas(document.getElementById('radarCanvas'), true);
+      if (centerMode === 'map') {
+        drawMapCanvas(document.getElementById('fullMapCanvas'), false);
+      }
+    }
+
+    function drawRadarMap() {
+      drawAllMaps();
+    }
+
+    function startMapAnimLoop() {
+      if (mapAnimRaf) return;
+      function tick(ts) {
+        const dt = lastMapRafTs ? Math.min(0.08, (ts - lastMapRafTs) / 1000) : 0.016;
+        lastMapRafTs = ts;
+        radarAnimPhase = (radarAnimPhase + dt * 3.8) % (Math.PI * 2);
+
+        const segs = getRouteSegments();
+        if (segs.length > 0 && !tracerPaused) {
+          if (tracerHoldFrames > 0) {
+            tracerHoldFrames--;
+          } else {
+            tracerT += dt * 0.72 * tracerSpeedMult;
+            if (tracerT >= 1.0) {
+              tracerT = 0.0;
+              tracerSegIdx = (tracerSegIdx + 1) % segs.length;
+              tracerHoldFrames = tracerSegIdx === 0 ? 18 : 6;
+            }
+          }
+        }
+        if (!dragInfo) drawAllMaps();
+        mapAnimRaf = requestAnimationFrame(tick);
+      }
+      mapAnimRaf = requestAnimationFrame(tick);
+    }
+
+    // Dual-Zone Pointer Dragging (Center = Move, Aim Knob / Outer Ring = Rotate 360°)
+    function attachRadarPointerHandlers(canvas, isMini) {
+      if (!canvas || canvas.dataset.ptrWired) return;
+      canvas.dataset.ptrWired = '1';
+      const handleDist = isMini ? 23 : 34;
+      const handleHit = isMini ? 15 : 18;
+      const moveThresh = isMini ? 14 : 18;
+      const rotThresh = isMini ? 40 : 48;
+
       function getCanvasUV(ev) {
         const rect = canvas.getBoundingClientRect();
         const x = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
@@ -2400,41 +3363,76 @@
         return { x, y, w: rect.width, h: rect.height };
       }
 
+      function computeAngleDeg(px, py, x, y) {
+        return Math.round((Math.atan2(y - py, x - px) * 180 / Math.PI + 360) % 360);
+      }
+
       canvas.addEventListener('pointerdown', (ev) => {
         if (!appState?.map?.node_positions) return;
         const { x, y, w, h } = getCanvasUV(ev);
         const pos = appState.map.node_positions;
         const ang = appState.map.node_angles;
+        const now = Date.now();
 
-        // First check aim dots
+        // 1. Check aim handle knobs first (highest priority, never confused with move)
         for (let i = 0; i < 4; i++) {
           const px = pos[i][0] * w;
           const py = pos[i][1] * h;
           const rad = (ang[i] || 0) * Math.PI / 180;
-          const ax = px + Math.cos(rad) * 22;
-          const ay = py + Math.sin(rad) * 22;
-          if (Math.hypot(x - ax, y - ay) < 12) {
-            dragInfo = { camIdx: i, mode: 'angle' };
+          const ax = px + Math.cos(rad) * handleDist;
+          const ay = py + Math.sin(rad) * handleDist;
+          if (Math.hypot(x - ax, y - ay) <= handleHit) {
+            mapEditEpoch++;
+            mapPinLockUntil[i] = now + 5000;
+            dragInfo = { camIdx: i, mode: 'angle', startX: x, startY: y, moved: false, changed: false };
             canvas.setPointerCapture(ev.pointerId);
             return;
           }
         }
-        // Then check pin centers
+        // 2. Check pin centers (Move node)
         for (let i = 0; i < 4; i++) {
           const px = pos[i][0] * w;
           const py = pos[i][1] * h;
-          if (Math.hypot(x - px, y - py) < 18) {
-            dragInfo = { camIdx: i, mode: 'move' };
+          if (Math.hypot(x - px, y - py) <= moveThresh) {
+            mapEditEpoch++;
+            mapPinLockUntil[i] = now + 5000;
+            dragInfo = { camIdx: i, mode: 'move', startX: x, startY: y, moved: false, changed: false };
             canvas.setPointerCapture(ev.pointerId);
             return;
           }
+        }
+        // 3. Check outer rotation ring (tap or drag anywhere in ring rotates 360° immediately)
+        for (let i = 0; i < 4; i++) {
+          const px = pos[i][0] * w;
+          const py = pos[i][1] * h;
+          if (Math.hypot(x - px, y - py) <= rotThresh) {
+            mapEditEpoch++;
+            mapPinLockUntil[i] = now + 5000;
+            appState.map.node_angles[i] = computeAngleDeg(px, py, x, y);
+            dragInfo = { camIdx: i, mode: 'angle', startX: x, startY: y, moved: false, changed: true };
+            canvas.setPointerCapture(ev.pointerId);
+            drawAllMaps();
+            return;
+          }
+        }
+        // 4. Mini radar empty tap -> Open Full Map View
+        if (isMini) {
+          dragInfo = { camIdx: -1, mode: 'open_full', startX: x, startY: y, moved: false, changed: false };
+          canvas.setPointerCapture(ev.pointerId);
         }
       });
 
       canvas.addEventListener('pointermove', (ev) => {
         if (!dragInfo || !appState) return;
         const { x, y, w, h } = getCanvasUV(ev);
+        if (Math.hypot(x - dragInfo.startX, y - dragInfo.startY) > 3) {
+          dragInfo.moved = true;
+        }
+        if (dragInfo.mode === 'open_full') return;
         const i = dragInfo.camIdx;
+        mapEditEpoch++;
+        mapPinLockUntil[i] = Date.now() + 5000;
+        dragInfo.changed = true;
         if (dragInfo.mode === 'move') {
           const u = Math.max(0.05, Math.min(0.95, x / w));
           const v = Math.max(0.05, Math.min(0.95, y / h));
@@ -2442,38 +3440,77 @@
         } else {
           const px = appState.map.node_positions[i][0] * w;
           const py = appState.map.node_positions[i][1] * h;
-          const deg = Math.round((Math.atan2(y - py, x - px) * 180 / Math.PI + 360) % 360);
-          appState.map.node_angles[i] = deg;
+          appState.map.node_angles[i] = computeAngleDeg(px, py, x, y);
         }
-        drawRadarMap();
+        drawAllMaps();
       });
 
       async function finishDrag(ev) {
         if (!dragInfo || !appState) return;
-        const i = dragInfo.camIdx;
-        const payload = dragInfo.mode === 'move'
-          ? { cam_idx: i, u: appState.map.node_positions[i][0], v: appState.map.node_positions[i][1] }
-          : { cam_idx: i, angle: appState.map.node_angles[i] };
+        const info = dragInfo;
         dragInfo = null;
         try { canvas.releasePointerCapture(ev.pointerId); } catch {}
+        if (info.mode === 'open_full') {
+          if (!info.moved && isMini) {
+            setCenterMode('map');
+            if (window.innerWidth < 768) switchMobilePane('live');
+          }
+          return;
+        }
+        if (!info.moved && !info.changed) return;
+        const i = info.camIdx;
+        const saveEpoch = ++mapEditEpoch;
+        mapPinLockUntil[i] = Date.now() + 4000;
+        mapSaveInFlight++;
+        const payload = info.mode === 'move'
+          ? { cam_idx: i, u: appState.map.node_positions[i][0], v: appState.map.node_positions[i][1] }
+          : { cam_idx: i, angle: appState.map.node_angles[i] };
         try {
-          await apiJson('/api/map/config', { method: 'POST', body: JSON.stringify(payload) });
-        } catch (e) { showToast(e.message, 'err'); }
+          const res = await apiJson('/api/map/config', { method: 'POST', body: JSON.stringify(payload) });
+          if (mapEditEpoch === saveEpoch && appState?.map) {
+            if (Array.isArray(res.node_positions)) appState.map.node_positions = res.node_positions;
+            if (Array.isArray(res.node_angles)) appState.map.node_angles = res.node_angles;
+            mapPinLockUntil[i] = Date.now() + 800;
+            drawAllMaps();
+          }
+        } catch (e) {
+          showToast(e.message, 'err');
+        } finally {
+          mapSaveInFlight = Math.max(0, mapSaveInFlight - 1);
+        }
       }
       canvas.addEventListener('pointerup', finishDrag);
       canvas.addEventListener('pointercancel', finishDrag);
-    })();
+    }
 
-    // ── State Polling & UI Hydration (Focus-Guarded!) ────────────────
+    // ── State Polling & UI Hydration (Focus-Guarded, Race-Safe & XSS-Safe) ──
     async function fetchState() {
+      const reqEpoch = mapEditEpoch;
       try {
-        const res = await fetch('/api/state', { cache: 'no-store' });
+        const res = await fetch('/api/state', { cache: 'no-store', credentials: 'same-origin' });
+        if (res.status === 401) {
+          showAuthGate('Session locked — enter your passcode to continue.');
+          return;
+        }
         if (!res.ok) return;
         const st = await res.json();
+        const nowMs = Date.now();
+        const lockAll = dragInfo !== null || mapSaveInFlight > 0 || reqEpoch !== mapEditEpoch;
+        if (appState?.map && st.map) {
+          for (let k = 0; k < 4; k++) {
+            if (lockAll || nowMs < mapPinLockUntil[k]) {
+              if (appState.map.node_positions?.[k]) st.map.node_positions[k] = appState.map.node_positions[k];
+              if (appState.map.node_angles?.[k] !== undefined) st.map.node_angles[k] = appState.map.node_angles[k];
+            }
+          }
+        }
         const prevRunning = appState?.is_running;
+        const prevSpotIdx = centerMode === 'spotlight' ? resolveSpotlightIdx() : -1;
         appState = st;
         hydrateUI(st);
-        if (prevRunning !== st.is_running) {
+        const newSpotIdx = centerMode === 'spotlight' ? resolveSpotlightIdx() : -1;
+        if (prevRunning !== st.is_running || (centerMode === 'spotlight' && prevSpotIdx !== newSpotIdx)) {
+          updateFeedCardVisibility();
           updateFeedStreams(true);
         }
       } catch {
@@ -2481,36 +3518,71 @@
       }
     }
 
+    const SENS_HINTS = {
+      strict: 'Strict: Zero false alarms (Ignores hands & random clothes)',
+      balanced: 'Balanced: Recommended for standard lighting & CCTV angles',
+      flexible: 'Flexible: Catches tough side/blurry angles (May show more alerts)',
+    };
+
     function hydrateUI(st) {
       // Status pill
       const pill = document.getElementById('statusPill');
       pill.className = `status-pill ${st.status_level || 'dim'}`;
       document.getElementById('statusText').textContent = st.status_text || 'Idle';
 
-      // Telemetry
+      // Top Telemetry & Center Hardware Strip
+      const gSpeed = st.config?.global_speed || '10x';
+      const actSpd = st.telemetry?.actual_speed_str || '1.0x';
+      const etaStr = st.telemetry?.eta_str || '--:--';
+      const devStr = st.telemetry?.device || 'CPU';
       document.getElementById('clockDisplay').textContent = st.clock_str || '00:00:00';
-      document.getElementById('actualSpeed').textContent = st.telemetry?.actual_speed_str || '1.0x';
-      document.getElementById('etaDisplay').textContent = st.telemetry?.eta_str || '--:--';
-      document.getElementById('deviceLabel').textContent = st.telemetry?.device || 'CPU';
+      document.getElementById('actualSpeed').textContent = actSpd;
+      document.getElementById('etaDisplay').textContent = etaStr;
+      document.getElementById('deviceLabel').textContent = devStr;
 
-      // Playback buttons
-      const startLabel = st.is_running ? (st.is_paused ? '▶ Resume' : '⏸ Pause') : '▶ Start';
-      const sideStartLabel = st.is_running ? (st.is_paused ? '▶ Resume' : '⏸ Pause') : '▶ Start Scan';
-      for (const id of ['topStartBtn', 'mobStartBtn']) {
-        const b = document.getElementById(id);
-        b.textContent = startLabel;
-        b.className = b.className.replace(/btn-primary|btn-amber/g, st.is_running && !st.is_paused ? 'btn-amber' : 'btn-primary');
+      const activeFeeds = (st.slots || []).filter(s => s && s.enabled).length;
+      const telemEl = document.getElementById('centerTelemText');
+      if (telemEl) {
+        telemEl.textContent = st.is_running
+          ? `⚡ Speed Telemetry: Target ${gSpeed} | Effective ${actSpd} | ETA ${etaStr} | ${devStr}`
+          : `⚡ Speed Telemetry: Standby (${devStr})`;
       }
-      const sb = document.getElementById('sideStartBtn');
-      sb.textContent = sideStartLabel;
-      sb.className = st.is_running && !st.is_paused ? 'btn-amber' : 'btn-primary';
+      const feedsEl = document.getElementById('centerFeedsCount');
+      if (feedsEl) {
+        feedsEl.textContent = `📹 FEEDS: ${activeFeeds}/4 ${st.is_running ? 'Scanning' : 'Configured'}`;
+        feedsEl.style.color = st.is_running ? '#34d399' : '#60a5fa';
+      }
+
+      // Separate Explicit Start / Pause / Stop Buttons (Matching app.py)
+      for (const [id, idleLbl, activeLbl] of [
+        ['topStartBtn', '▶ Start', '▶ Running'],
+        ['sideStartBtn', '▶  START SCANNING', '▶  SCAN RUNNING'],
+        ['mobStartBtn', '▶ Start', '▶ Active'],
+      ]) {
+        const b = document.getElementById(id);
+        if (!b) continue;
+        b.textContent = st.is_running ? activeLbl : idleLbl;
+        b.disabled = !!st.is_running;
+      }
+
+      for (const [id, pauseLbl, resumeLbl] of [
+        ['topPauseBtn', '⏸ Pause', '▶ Resume'],
+        ['sidePauseBtn', '⏸  PAUSE', '▶  RESUME'],
+        ['mobPauseBtn', '⏸ Pause', '▶ Resume'],
+      ]) {
+        const pb = document.getElementById(id);
+        if (!pb) continue;
+        pb.disabled = !st.is_running;
+        pb.textContent = st.is_paused ? resumeLbl : pauseLbl;
+        pb.className = pb.className.replace(/btn-primary|btn-amber/g, st.is_paused ? 'btn-primary' : 'btn-amber');
+      }
 
       for (const id of ['topStopBtn', 'sideStopBtn', 'mobStopBtn']) {
-        document.getElementById(id).disabled = !st.is_running;
+        const sb = document.getElementById(id);
+        if (sb) sb.disabled = !st.is_running;
       }
 
       // Global Speed Pills
-      const gSpeed = st.config?.global_speed || '10x';
       document.querySelectorAll('.speed-pill').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.speed === gSpeed);
       });
@@ -2538,26 +3610,43 @@
       document.getElementById('sensStrictBtn').classList.toggle('active-green', sens === 'strict');
       document.getElementById('sensBalancedBtn').classList.toggle('active-green', sens === 'balanced');
       document.getElementById('sensFlexibleBtn').classList.toggle('active-green', sens === 'flexible');
+      const hintEl = document.getElementById('sensHintTxt');
+      if (hintEl) hintEl.textContent = SENS_HINTS[sens] || SENS_HINTS.balanced;
 
-      // Target Photo Gallery
+      // Target Photo Gallery (XSS-safe DOM)
       const strip = document.getElementById('galleryStrip');
       const gal = st.gallery || [];
       if (gal.length === 0) {
         if (strip.dataset.sig !== 'empty') {
           strip.dataset.sig = 'empty';
-          strip.innerHTML = '<div class="gallery-empty">Upload 1–8 clear photos or a 360° reference clip</div>';
+          strip.innerHTML = '<div class="gallery-empty">No Photos Loaded — Upload Front, Side or Back views</div>';
         }
       } else {
         const sig = gal.map(g => `${g.index}:${g.angle_label}:${g.has_face}`).join('|');
         if (strip.dataset.sig !== sig) {
           strip.dataset.sig = sig;
-          strip.innerHTML = gal.map(g => `
-            <div class="gallery-item" title="Angle: ${g.angle_label}">
-              <img src="data:image/jpeg;base64,${g.thumb_b64}" alt="Profile ${g.angle_label}" />
-              ${g.has_face ? '<span class="gallery-face" title="Face vector extracted">✓</span>' : ''}
-              <span class="gallery-badge">${g.angle_label || 'VIEW'}</span>
-            </div>
-          `).join('');
+          strip.innerHTML = '';
+          for (const g of gal) {
+            const box = document.createElement('div');
+            box.className = 'gallery-item';
+            box.title = `Angle: ${g.angle_label || 'VIEW'}`;
+            const img = document.createElement('img');
+            img.src = `data:image/jpeg;base64,${g.thumb_b64}`;
+            img.alt = `Profile ${g.angle_label || 'VIEW'}`;
+            box.appendChild(img);
+            if (g.has_face) {
+              const fBadge = document.createElement('span');
+              fBadge.className = 'gallery-face';
+              fBadge.title = 'Face vector extracted';
+              fBadge.textContent = '✓';
+              box.appendChild(fBadge);
+            }
+            const lbl = document.createElement('span');
+            lbl.className = 'gallery-badge';
+            lbl.textContent = g.angle_label || 'VIEW';
+            box.appendChild(lbl);
+            strip.appendChild(box);
+          }
         }
       }
 
@@ -2593,7 +3682,6 @@
         const pcBtn = document.getElementById(`pcBrowseBtn${i}`);
         if (pcBtn) pcBtn.style.display = st.local_fs_enabled === false ? 'none' : 'inline-flex';
 
-        // Feed Card metadata
         document.getElementById(`feedLabel${i}`).textContent = `CAM ${i + 1} · ${s.location}`;
         document.getElementById(`feedCard${i}`).classList.toggle('spotted', !!s.spotted);
         document.getElementById(`feedProg${i}`).textContent = s.progress_str || `${Math.round(s.progress_pct || 0)}%`;
@@ -2619,7 +3707,7 @@
         }
       }
 
-      // Last Known Alert Banner
+      // Last Known Alert Banner (overlap / lost / active / idle)
       const tr = st.tracker || {};
       const lk = tr.last_known || {};
       const banner = document.getElementById('alertBanner');
@@ -2628,11 +3716,14 @@
       const thumb = document.getElementById('alertThumb');
 
       if (lk.camera) {
-        banner.className = tr.is_lost ? 'alert-banner lost' : 'alert-banner';
-        const prefix = tr.is_lost ? `⚠️ TARGET LOST (${tr.seconds_since_last}s ago)` : '📍 ACTIVE LOCATION';
-        const camStr = lk.is_overlap && lk.overlap_cameras?.length
-          ? lk.overlap_cameras.join(' + ')
-          : lk.camera;
+        const isOverlap = !!(lk.is_overlap && lk.overlap_cameras?.length >= 2);
+        banner.className = isOverlap
+          ? 'alert-banner overlap'
+          : (tr.is_lost ? 'alert-banner lost' : 'alert-banner');
+        const camStr = isOverlap ? lk.overlap_cameras.join(' + ') : lk.camera;
+        const prefix = isOverlap
+          ? '🤝 OVERLAP ZONE'
+          : (tr.is_lost ? `⚠️ TARGET LOST (${tr.seconds_since_last}s ago)` : '📍 ACTIVE LOCATION');
         head.textContent = `${prefix}: ${camStr}`;
         sub.textContent = `Video ${lk.video_time || '--:--'} · Real ${lk.timestamp || '--'} · Confidence ${Math.round((lk.confidence || 0) * 100)}%`;
         if (lk.snapshot_path) {
@@ -2645,8 +3736,12 @@
         }
       } else {
         banner.className = 'alert-banner idle';
-        head.textContent = st.is_running ? 'Scanning active cameras for target...' : 'Ready — configure target & cameras, then press Start';
-        sub.textContent = st.is_running ? `Universal Clock ${st.clock_str} · ${st.progress?.summary || ''}` : 'Supports local files, webcam, mobile camera IP URLs, and 360° ReID';
+        head.textContent = st.is_running
+          ? 'Scanning active cameras for target...'
+          : 'Last Known Location: Ready to search';
+        sub.textContent = st.is_running
+          ? `Universal Clock ${st.clock_str} · ${st.progress?.summary || ''}`
+          : 'Supports local files, webcam, phone IP URLs, and 360° ReID';
         thumb.style.display = 'none';
       }
 
@@ -2659,55 +3754,103 @@
         blueprintImg = null;
       }
 
-      // Route & Timeline
+      // Route, Last Seen Ago, Flowchart Live Sync & Timeline (XSS-safe DOM)
       document.getElementById('sightingCount').textContent = String(tr.total_sightings || 0);
-      document.getElementById('routeArrowBox').textContent = tr.route_arrow || 'Awaiting first target sighting...';
-      document.getElementById('fovToggleBtn').style.opacity = st.map?.show_fov_cones ? '1' : '0.5';
+      document.getElementById('routeArrowBox').textContent = tr.route_arrow || 'Waiting for sightings...';
+      const seenEl = document.getElementById('lastSeenAgo');
+      if (seenEl) {
+        seenEl.textContent = tr.time_since_last_seen
+          ? `Last seen: ${tr.time_since_last_seen}`
+          : (tr.seconds_since_last != null && lk.camera ? `Last seen: ${tr.seconds_since_last}s ago` : 'Last seen: —');
+      }
+      const fovOp = st.map?.show_fov_cones ? '1' : '0.5';
+      document.getElementById('fovToggleBtn').style.opacity = fovOp;
+      const fullFovBtn = document.getElementById('fullFovToggleBtn');
+      if (fullFovBtn) {
+        fullFovBtn.textContent = st.map?.show_fov_cones ? '👁️ Hide FOV Cones' : '👁️ Show FOV Cones';
+      }
+
+      if (document.getElementById('flowchartModal')?.classList.contains('open')) {
+        document.getElementById('flowchartPre').textContent = tr.formatted_journey || 'No target sightings recorded yet.';
+      }
 
       const tlEl = document.getElementById('timelineList');
       const items = tr.timeline || [];
       if (items.length === 0) {
         if (tlEl.dataset.sig !== 'empty') {
           tlEl.dataset.sig = 'empty';
-          tlEl.innerHTML = '<div style="font-size:11px; color:var(--text-dim); text-align:center; padding:12px;">No detections logged yet</div>';
+          tlEl.innerHTML = '<div style="font-size:11px; color:var(--text-dim); text-align:center; padding:12px;">No target sightings recorded yet</div>';
         }
       } else {
         const sig = items.map(x => `${x.index}:${x.dwell_str}:${x.type}`).join('|');
         if (tlEl.dataset.sig !== sig) {
           tlEl.dataset.sig = sig;
-          tlEl.innerHTML = [...items].reverse().map(x => {
+          tlEl.innerHTML = '';
+          for (const x of [...items].reverse()) {
             const snapUrl = x.snapshot_path ? `/api/snapshot?path=${encodeURIComponent(x.snapshot_path)}` : '';
-            const moveText = x.from_camera ? `${x.from_camera} → ${x.camera}` : x.camera;
+            const moveText = x.from_camera ? `${x.from_camera} → ${x.camera}` : (x.camera || 'Unknown');
             const titleText = `${x.type || 'SIGHTING'} · ${moveText}`;
-            const safeTitle = titleText.replace(/'/g, '&#39;');
-            return `
-              <div class="tl-item ${x.type || ''}">
-                ${snapUrl ? `<img class="tl-thumb" src="${snapUrl}" alt="Sighting" onclick="openLightbox('${snapUrl}', '${safeTitle}')" />` : ''}
-                <div class="tl-body">
-                  <div class="tl-title">
-                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${moveText}</span>
-                    <span class="tabular" style="font-size:10px; color:#34d399;">${Math.round((x.confidence || 0) * 100)}%</span>
-                  </div>
-                  <div class="tl-meta">
-                    <span>${x.type}</span> · <span class="tabular">${x.entry_time || x.video_time}</span>
-                    ${x.dwell_str ? ` · Stay <strong>${x.dwell_str}</strong>` : ''}
-                  </div>
-                </div>
-              </div>
-            `;
-          }).join('');
+
+            const row = document.createElement('div');
+            row.className = `tl-item ${x.type || ''}`;
+
+            if (snapUrl) {
+              const img = document.createElement('img');
+              img.className = 'tl-thumb';
+              img.src = snapUrl;
+              img.alt = 'Sighting';
+              img.addEventListener('click', () => openLightbox(snapUrl, titleText));
+              row.appendChild(img);
+            }
+
+            const body = document.createElement('div');
+            body.className = 'tl-body';
+
+            const titleRow = document.createElement('div');
+            titleRow.className = 'tl-title';
+            const moveSpan = document.createElement('span');
+            moveSpan.style.overflow = 'hidden';
+            moveSpan.style.textOverflow = 'ellipsis';
+            moveSpan.style.whiteSpace = 'nowrap';
+            moveSpan.textContent = moveText;
+            const confSpan = document.createElement('span');
+            confSpan.className = 'tabular';
+            confSpan.style.fontSize = '10px';
+            confSpan.style.color = '#34d399';
+            confSpan.textContent = `${Math.round((x.confidence || 0) * 100)}%`;
+            titleRow.appendChild(moveSpan);
+            titleRow.appendChild(confSpan);
+
+            const metaRow = document.createElement('div');
+            metaRow.className = 'tl-meta';
+            const typeSpan = document.createElement('span');
+            typeSpan.textContent = `${x.type || 'SIGHTING'} · `;
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'tabular';
+            timeSpan.textContent = x.entry_time || x.video_time || '--:--';
+            metaRow.appendChild(typeSpan);
+            metaRow.appendChild(timeSpan);
+            if (x.dwell_str) {
+              metaRow.appendChild(document.createTextNode(' · Stay '));
+              const stayB = document.createElement('strong');
+              stayB.textContent = x.dwell_str;
+              metaRow.appendChild(stayB);
+            }
+
+            body.appendChild(titleRow);
+            body.appendChild(metaRow);
+            row.appendChild(body);
+            tlEl.appendChild(row);
+          }
         }
       }
 
-      if (!dragInfo) drawRadarMap();
+      if (!dragInfo) drawAllMaps();
     }
 
     // ── Boot ─────────────────────────────────────────────────────────
-    buildSlotCards();
-    fetchState();
-    pollTimer = setInterval(fetchState, 400);
-    snapTimer = setInterval(pollSnapshotFrames, 450);
-    window.addEventListener('resize', () => drawRadarMap());
+    window.addEventListener('resize', () => drawAllMaps());
+    checkAuthAndBoot();
   </script>
 </body>
 </html>

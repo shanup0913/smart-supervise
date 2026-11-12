@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir -r requirements-web.txt \
 COPY core/ ./core/
 COPY models/ ./models/
 COPY web/ ./web/
+COPY webapp/ ./webapp/
 COPY web_app.py ./
 
 RUN mkdir -p /app/alerts /app/reports /app/uploads /app/models/torch_cache \

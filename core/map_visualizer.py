@@ -19,6 +19,7 @@ Key Capabilities:
 import os
 import json
 import math
+import threading
 from PIL import Image
 try:
     import tkinter as tk
@@ -48,6 +49,7 @@ class MapVisualizer:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.config_dir = os.path.join(base_dir, "models")
         self.config_path = os.path.join(self.config_dir, "map_config.json")
+        self._lock = threading.RLock()
 
         self.node_positions = list(DEFAULT_NODE_POSITIONS)
         self.node_angles = list(DEFAULT_NODE_ANGLES)
@@ -102,20 +104,23 @@ class MapVisualizer:
 
     def save_config(self):
         """Persists current camera positions, angles, and custom blueprint path to models/map_config.json."""
-        try:
-            os.makedirs(self.config_dir, exist_ok=True)
-            cfg = {
-                "node_positions": [
-                    [round(p[0], 4), round(p[1], 4)] for p in self.node_positions
-                ],
-                "node_angles": [round(a, 1) for a in self.node_angles],
-                "show_fov_cones": self.show_fov_cones,
-                "custom_blueprint_path": self.custom_blueprint_path
-            }
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                os.makedirs(self.config_dir, exist_ok=True)
+                cfg = {
+                    "node_positions": [
+                        [round(p[0], 4), round(p[1], 4)] for p in self.node_positions
+                    ],
+                    "node_angles": [round(a, 1) for a in self.node_angles],
+                    "show_fov_cones": self.show_fov_cones,
+                    "custom_blueprint_path": self.custom_blueprint_path
+                }
+                tmp_path = self.config_path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2)
+                os.replace(tmp_path, self.config_path)
+            except Exception:
+                pass
 
     def set_custom_blueprint(self, image_path):
         """Sets and validates a new custom floorplan image."""
@@ -141,29 +146,33 @@ class MapVisualizer:
 
     def reset_to_default(self):
         """Resets all camera pin coordinates and angles to standard facility defaults."""
-        self.node_positions = list(DEFAULT_NODE_POSITIONS)
-        self.node_angles = list(DEFAULT_NODE_ANGLES)
-        self.save_config()
+        with self._lock:
+            self.node_positions = list(DEFAULT_NODE_POSITIONS)
+            self.node_angles = list(DEFAULT_NODE_ANGLES)
+            self.save_config()
 
     def set_node_position(self, cam_idx, u, v):
         """Updates normalized position (0.04 - 0.96) for a specific camera."""
-        if 0 <= cam_idx < 4:
-            clamped_u = max(0.04, min(0.96, float(u)))
-            clamped_v = max(0.06, min(0.94, float(v)))
-            self.node_positions[cam_idx] = (clamped_u, clamped_v)
-            self.save_config()
+        with self._lock:
+            if 0 <= cam_idx < 4:
+                clamped_u = max(0.04, min(0.96, float(u)))
+                clamped_v = max(0.06, min(0.94, float(v)))
+                self.node_positions[cam_idx] = (clamped_u, clamped_v)
+                self.save_config()
 
     def set_node_angle(self, cam_idx, deg):
         """Updates heading angle (0° - 360°) for a specific camera."""
-        if 0 <= cam_idx < 4:
-            self.node_angles[cam_idx] = float(deg) % 360.0
-            self.save_config()
+        with self._lock:
+            if 0 <= cam_idx < 4:
+                self.node_angles[cam_idx] = float(deg) % 360.0
+                self.save_config()
 
     def toggle_fov_cones(self):
         """Toggles visibility of the CCTV FOV coverage vision cones."""
-        self.show_fov_cones = not self.show_fov_cones
-        self.save_config()
-        return self.show_fov_cones
+        with self._lock:
+            self.show_fov_cones = not self.show_fov_cones
+            self.save_config()
+            return self.show_fov_cones
 
     def toggle_pause(self):
         """Toggles pause/play for the trip tracer animation."""

@@ -46,12 +46,110 @@ class _LiveStreamReader:
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
+        self._watchdog_thread = None
         self._resp = None
         self._cap = None
 
         self.latest_frame = None
         self.frame_seq = 0
         self.last_frame_time = 0.0
+        self.is_reconnecting = False
+        self.reconnect_attempt = 0
+        self.last_error = ""
+        self.stall_timeout_sec = 3.0
+        self.backoff_base_sec = 0.5
+        self.backoff_max_sec = 10.0
+
+    def _mark_healthy(self):
+        with self._lock:
+            self.is_reconnecting = False
+            self.reconnect_attempt = 0
+            self.last_error = ""
+            self.last_frame_time = time.time()
+
+    def _mark_reconnecting(self, reason=""):
+        with self._lock:
+            self.is_reconnecting = True
+            self.reconnect_attempt += 1
+            if reason:
+                self.last_error = str(reason)
+            return self.reconnect_attempt
+
+    def _backoff_delay(self):
+        with self._lock:
+            attempt = max(1, self.reconnect_attempt)
+        return min(self.backoff_max_sec, self.backoff_base_sec * (2 ** min(attempt - 1, 5)))
+
+    def _sleep_interruptible(self, seconds):
+        deadline = time.time() + max(0.0, float(seconds))
+        while self._running and time.time() < deadline:
+            time.sleep(min(0.1, max(0.01, deadline - time.time())))
+
+    def _drop_connection(self):
+        resp = self._resp
+        self._resp = None
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        cap = self._cap
+        self._cap = None
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+    def get_health(self):
+        """Returns current live-reader health and reconnection backoff state."""
+        with self._lock:
+            stalled = (time.time() - self.last_frame_time) if self.last_frame_time > 0 else 0.0
+            return {
+                "reconnecting": bool(self.is_reconnecting),
+                "attempt": int(self.reconnect_attempt),
+                "stalled_sec": round(stalled, 2),
+                "last_error": self.last_error,
+            }
+
+    def _start_watchdog(self):
+        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+            self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+            self._watchdog_thread.start()
+
+    def _watchdog_loop(self):
+        """Monitors live stream heartbeat and tears down stalled sockets cleanly."""
+        while self._running:
+            time.sleep(0.4)
+            if not self._running:
+                break
+            with self._lock:
+                last_ts = self.last_frame_time
+                already_reconnecting = self.is_reconnecting
+            if last_ts <= 0:
+                continue
+            stalled = time.time() - last_ts
+            if stalled >= self.stall_timeout_sec:
+                if not already_reconnecting:
+                    attempt = self._mark_reconnecting(f"Stream stalled for {stalled:.1f}s")
+                    print(f"[StreamWatchdog] Source stalled ({stalled:.1f}s). Reconnecting (attempt #{attempt})...")
+                if self._resp is not None:
+                    try:
+                        self._resp.close()
+                    except Exception:
+                        pass
+                    self._resp = None
+                elif (
+                    self._cap is not None
+                    and stalled >= (self.stall_timeout_sec * 2.0)
+                    and (self.is_http or (isinstance(self.source, str) and self.source.startswith("rtsp://")))
+                ):
+                    cap = self._cap
+                    self._cap = None
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
 
     def open(self, timeout=4.5):
         """Connects to the live source and waits for the first valid frame."""
@@ -63,6 +161,8 @@ class _LiveStreamReader:
                 self._thread = threading.Thread(target=self._mjpeg_loop, daemon=True)
                 self._thread.start()
                 if self._wait_first_frame(timeout=timeout):
+                    self._mark_healthy()
+                    self._start_watchdog()
                     return True
                 self.stop()
                 return False
@@ -94,11 +194,12 @@ class _LiveStreamReader:
         with self._lock:
             self.latest_frame = _cap_height_480(frame)
             self.frame_seq = 1
-            self.last_frame_time = time.time()
+        self._mark_healthy()
 
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
+        self._start_watchdog()
         return True
 
     def _try_open_http_mjpeg(self, timeout=4.0):
@@ -247,7 +348,8 @@ class _LiveStreamReader:
                     break
                 buf.clear()
                 if not self._try_open_http_mjpeg(timeout=3.0):
-                    time.sleep(0.25)
+                    self._mark_reconnecting("MJPEG connection failed")
+                    self._sleep_interruptible(self._backoff_delay())
                     continue
                 resp = self._resp
 
@@ -266,15 +368,16 @@ class _LiveStreamReader:
                         with self._lock:
                             self.latest_frame = scaled
                             self.frame_seq += 1
-                            self.last_frame_time = time.time()
-            except Exception:
+                        self._mark_healthy()
+            except Exception as exc:
+                self._mark_reconnecting(str(exc) or "MJPEG stream dropped")
                 try:
                     resp.close()
                 except Exception:
                     pass
                 self._resp = None
                 if self._running:
-                    time.sleep(0.2)
+                    self._sleep_interruptible(self._backoff_delay())
 
     def _capture_loop(self):
         while self._running:
@@ -282,7 +385,10 @@ class _LiveStreamReader:
             if cap is None or not cap.isOpened():
                 if not self._running:
                     break
-                time.sleep(0.25)
+                self._mark_reconnecting("Capture disconnected")
+                self._sleep_interruptible(self._backoff_delay())
+                if not self._running:
+                    break
                 self._cap = self._open_cv_capture(self.source)
                 continue
 
@@ -290,25 +396,26 @@ class _LiveStreamReader:
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     if self.is_http or (isinstance(self.source, str) and self.source.startswith("rtsp://")):
-                        try:
-                            cap.release()
-                        except Exception:
-                            pass
-                        self._cap = None
-                        time.sleep(0.2)
+                        self._mark_reconnecting("Stream frame timeout / EOF")
+                        self._drop_connection()
+                        self._sleep_interruptible(self._backoff_delay())
                     else:
-                        time.sleep(0.01)
+                        if self.last_frame_time > 0 and (time.time() - self.last_frame_time) > self.stall_timeout_sec:
+                            self._mark_reconnecting("Camera frame stall")
+                        time.sleep(0.02)
                     continue
 
                 scaled = _cap_height_480(frame)
                 with self._lock:
                     self.latest_frame = scaled
                     self.frame_seq += 1
-                    self.last_frame_time = time.time()
-            except Exception:
+                self._mark_healthy()
+            except Exception as exc:
                 if not self._running:
                     break
-                time.sleep(0.05)
+                self._mark_reconnecting(str(exc) or "Capture read error")
+                self._drop_connection()
+                self._sleep_interruptible(self._backoff_delay())
 
     def get_latest(self):
         """Returns (frame_copy_or_None, seq, last_frame_time)."""
@@ -319,24 +426,15 @@ class _LiveStreamReader:
 
     def stop(self):
         self._running = False
-        if self._resp is not None:
-            try:
-                self._resp.close()
-            except Exception:
-                pass
-            self._resp = None
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-            self._cap = None
-        if self._thread is not None and self._thread.is_alive():
-            try:
-                self._thread.join(timeout=1.5)
-            except Exception:
-                pass
-        self._thread = None
+        self._drop_connection()
+        for th_attr in ("_thread", "_watchdog_thread"):
+            th = getattr(self, th_attr, None)
+            if th is not None and th.is_alive():
+                try:
+                    th.join(timeout=1.2)
+                except Exception:
+                    pass
+            setattr(self, th_attr, None)
 
 
 class VideoEngine:
@@ -501,6 +599,7 @@ class VideoEngine:
         slot["last_display_seq"] = -1
         slot["last_ai_seq"] = -1
         slot["last_ai_time"] = 0.0
+        slot["last_reconnect_draw_time"] = 0.0
         slot["cached_detections"] = []
         slot["cached_spotted"] = False
 
@@ -902,14 +1001,27 @@ class VideoEngine:
 
         slot = self.slots[idx]
         reader = slot.get("reader")
+        health = reader.get_health() if (reader is not None and not slot["is_file"]) else {
+            "reconnecting": False,
+            "attempt": 0,
+            "stalled_sec": 0.0,
+            "last_error": "",
+        }
 
         # Decoupled live rendering: overlay latest AI boxes onto every fresh raw camera frame (~30 FPS)
         if include_frame and slot["enabled"] and not slot["is_file"] and reader is not None and self.is_running and not self.is_paused:
             raw_frame, raw_seq, _ = reader.get_latest()
+            reconnecting_now = bool(health["reconnecting"])
+            reconnect_attempt = int(health["attempt"]) if reconnecting_now else 0
             need_draw = False
+            now_draw = time.time()
             with self._lock:
                 self._sync_live_clock_locked()
-                if raw_frame is not None and raw_seq != slot["last_display_seq"]:
+                stale_reconnect_refresh = (
+                    reconnecting_now
+                    and (now_draw - slot.get("last_reconnect_draw_time", 0.0)) >= 0.45
+                )
+                if (raw_frame is not None and raw_seq != slot["last_display_seq"]) or stale_reconnect_refresh:
                     need_draw = True
                     cached_dets = list(slot["cached_detections"])
                     cached_spotted = slot["cached_spotted"]
@@ -917,19 +1029,26 @@ class VideoEngine:
                     cur_sec = int(self.global_clock_sec)
                     cam_time_str = f"{cur_sec // 3600:02d}:{(cur_sec % 3600) // 60:02d}:{cur_sec % 60:02d}"
             if need_draw:
-                preview_raw = _cap_height_480(raw_frame)
+                if raw_frame is not None:
+                    preview_raw = _cap_height_480(raw_frame)
+                else:
+                    preview_raw = np.zeros((360, 640, 3), dtype=np.uint8)
                 annotated = self.scanner.draw_overlays(
                     preview_raw,
                     cached_dets,
                     cached_spotted,
                     camera_name=loc_name,
                     video_time_str=cam_time_str,
+                    reconnecting_attempt=reconnect_attempt,
                 )
                 with self._lock:
                     if slot["enabled"]:
                         slot["current_frame"] = annotated
-                        slot["last_display_seq"] = raw_seq
-                        slot["frame_seq"] = raw_seq
+                        if raw_frame is not None:
+                            slot["last_display_seq"] = raw_seq
+                        if reconnecting_now:
+                            slot["last_reconnect_draw_time"] = now_draw
+                        slot["frame_seq"] = max(int(raw_seq), slot.get("frame_seq", 0) + 1)
                         slot["spotted"] = cached_spotted
 
         with self._lock:
@@ -944,7 +1063,10 @@ class VideoEngine:
                 progress_str = "Disabled"
             elif not is_file:
                 pct = 100.0
-                progress_str = "Live Stream"
+                if health["reconnecting"]:
+                    progress_str = f"Reconnecting (#{health['attempt']})"
+                else:
+                    progress_str = "Live Stream"
             elif ended or (tot_frames > 0 and cur_pos >= tot_frames):
                 pct = 100.0
                 tot_sec = int(slot["duration_sec"]) if slot["duration_sec"] > 0 else int(tot_frames / fps)
@@ -976,6 +1098,8 @@ class VideoEngine:
                 "location": slot["location"],
                 "ended": ended,
                 "is_file": is_file,
+                "reconnecting": bool(health["reconnecting"]),
+                "reconnect_attempt": int(health["attempt"]),
                 "progress_pct": pct,
                 "progress_str": progress_str,
                 "speed": slot["speed"]
@@ -1330,7 +1454,7 @@ class VideoEngine:
                         break
                     if not slot["is_file"]:
                         reader = slot.get("reader")
-                        if reader is None:
+                        if reader is None or reader.get_health()["reconnecting"]:
                             continue
                         frame, raw_seq, _ = reader.get_latest()
                         cam_time_str = global_hms

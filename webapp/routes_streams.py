@@ -95,6 +95,7 @@ async def api_slot_upload_video(request: Request):
 
     try:
         await asyncio.to_thread(_apply)
+        await asyncio.to_thread(st.run_storage_cleanup)
         return JSONResponse({"ok": True, "source": saved_path, "location": new_loc})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

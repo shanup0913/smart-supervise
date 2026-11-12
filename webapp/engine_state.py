@@ -63,6 +63,16 @@ class WebAppState:
         self.global_speed = "10x"
         self.status_text = "IDLE — Upload Target & Configure Cameras"
         self.status_level = "dim"  # dim | green | amber | red
+        self.run_storage_cleanup()
+
+    def run_storage_cleanup(self):
+        """Prunes expired/oversized files while preserving active slot video paths."""
+        try:
+            from core.storage_manager import run_storage_maintenance
+            active_paths = [s.get("source") for s in self.video_engine.slots if s.get("source")]
+            return run_storage_maintenance(active_paths=active_paths)
+        except Exception:
+            return None
 
     def set_status(self, text, level="dim"):
         with self._ui_lock:
@@ -205,6 +215,8 @@ class WebAppState:
                     "is_file": bool(st["is_file"]),
                     "ended": bool(st["ended"]),
                     "spotted": bool(st["spotted"]),
+                    "reconnecting": bool(st.get("reconnecting", False)),
+                    "reconnect_attempt": int(st.get("reconnect_attempt", 0)),
                     "progress_pct": round(float(st["progress_pct"]), 1),
                     "progress_str": st["progress_str"],
                     "frame_seq": int(st["frame_seq"]),

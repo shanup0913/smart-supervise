@@ -63,6 +63,25 @@ class CCTVScanner:
         # Directory for saving alert snapshots
         self.alerts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alerts"))
         os.makedirs(self.alerts_dir, exist_ok=True)
+        self._last_alerts_cleanup = 0.0
+        self._cleanup_alerts_if_due(force=True)
+
+    def _cleanup_alerts_if_due(self, force=False):
+        """Enforces bounded age/size retention on alert snapshot crops (throttled)."""
+        now = time.time()
+        if not force and (now - self._last_alerts_cleanup) < 300.0:
+            return
+        self._last_alerts_cleanup = now
+        try:
+            from core.storage_manager import enforce_retention, _env_float
+            enforce_retention(
+                self.alerts_dir,
+                max_age_days=_env_float("SMARTSUPERVISE_ALERT_MAX_DAYS", 7.0),
+                max_size_mb=_env_float("SMARTSUPERVISE_ALERT_MAX_MB", 250.0),
+                extensions={".jpg", ".jpeg", ".png"},
+            )
+        except Exception:
+            pass
 
     def set_person_target(self, photo_path_or_crop, person_name="Target Person", angle_label="Front View"):
         """Sets a target person by reference photo (Thread-Safe)."""
@@ -418,6 +437,7 @@ class CCTVScanner:
                         cv2.putText(snap_img, snap_label, (4, snap_h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
                         cv2.imwrite(snapshot_path, snap_img)
                         snapshot_saved_path = snapshot_path
+                        self._cleanup_alerts_if_due()
                     except Exception:
                         pass
 
@@ -505,8 +525,16 @@ class CCTVScanner:
             return [], False, None
         return self.analyze_batch([(frame, camera_name, video_time_str, fast_mode)])[0]
 
-    def draw_overlays(self, frame, detections, spotted_now, camera_name="Camera 1", video_time_str=None):
-        """Renders OSD timestamp, cached detection bounding boxes, and bottom status banner."""
+    def draw_overlays(
+        self,
+        frame,
+        detections,
+        spotted_now,
+        camera_name="Camera 1",
+        video_time_str=None,
+        reconnecting_attempt=0,
+    ):
+        """Renders OSD timestamp, cached detection bounding boxes, reconnect banner, and status strip."""
         if frame is None:
             return None
 
@@ -546,6 +574,28 @@ class CCTVScanner:
             text_x = x1 + (4 if det["kind"] == "mismatch" else 5)
             cv2.putText(annotated_frame, label, (text_x, text_y),
                         cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, text_thick)
+
+        if reconnecting_attempt and reconnecting_attempt > 0:
+            banner_msg = f"RECONNECTING... (Attempt #{int(reconnecting_attempt)})"
+            (tw, th), _ = cv2.getTextSize(banner_msg, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+            bx1 = max(8, (w - tw) // 2 - 14)
+            bx2 = min(w - 8, (w + tw) // 2 + 14)
+            by1 = max(36, (h - th) // 2 - 14)
+            by2 = min(max(by1 + 28, h - 46), (h + th) // 2 + 12)
+            roi = annotated_frame[by1:by2, bx1:bx2]
+            if roi.size > 0:
+                dark = np.full_like(roi, (18, 22, 48))
+                cv2.addWeighted(dark, 0.78, roi, 0.22, 0, roi)
+            cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), (0, 180, 255), 2)
+            cv2.putText(
+                annotated_frame,
+                banner_msg,
+                (max(bx1 + 8, (w - tw) // 2), max(by1 + 20, (h + th) // 2)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (0, 210, 255),
+                2,
+            )
 
         self._draw_status_overlay(annotated_frame, spotted_now, camera_name, video_time_str)
         return annotated_frame

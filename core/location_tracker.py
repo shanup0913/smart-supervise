@@ -438,6 +438,17 @@ class LocationTracker:
         """Exports timeline and complete journey path to CSV and JSON."""
         csv_path = self.export_to_csv()
         json_path = self.export_to_json()
+        try:
+            from core.storage_manager import enforce_retention, _env_float
+            enforce_retention(
+                self.output_dir,
+                max_age_days=_env_float("SMARTSUPERVISE_REPORT_MAX_DAYS", 14.0),
+                max_size_mb=_env_float("SMARTSUPERVISE_REPORT_MAX_MB", 100.0),
+                extensions={".csv", ".json"},
+                skip_paths=[csv_path, json_path],
+            )
+        except Exception:
+            pass
         return csv_path, json_path
 
     def export_to_csv(self):

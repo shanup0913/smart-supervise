@@ -601,6 +601,12 @@ class CenterGrid(ctk.CTkFrame):
                         target_pbar_col = ACCENT_GREEN
                         target_plbl_text = f"⚡{spd_val} · {pstr}"
                         target_plbl_col = ACCENT_GREEN
+                    elif state.get("reconnecting", False):
+                        target_pct = 1.0
+                        target_pbar_col = ACCENT_AMBER
+                        att = int(state.get("reconnect_attempt", 1) or 1)
+                        target_plbl_text = f"🔄 RECONNECTING (#{att})..."
+                        target_plbl_col = ACCENT_AMBER
                     else:
                         target_pct = 1.0
                         target_pbar_col = ACCENT_BLUE
@@ -687,6 +693,11 @@ class CenterGrid(ctk.CTkFrame):
                     target_pct = pct / 100.0
                     target_col = ACCENT_GREEN
                     target_txt = f"CAM {idx+1} [⚡{spd}] · {pstr}"
+                elif state.get("reconnecting", False):
+                    target_pct = 1.0
+                    target_col = ACCENT_AMBER
+                    att = int(state.get("reconnect_attempt", 1) or 1)
+                    target_txt = f"CAM {idx+1} 🔄 RECONNECTING (#{att})..."
                 else:
                     target_pct = 1.0
                     target_col = ACCENT_BLUE

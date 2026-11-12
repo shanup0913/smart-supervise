@@ -3663,7 +3663,11 @@
         d.bar.style.width = `${Math.round(s.progress_pct || 0)}%`;
         d.progTxt.textContent = s.progress_str || `${Math.round(s.progress_pct || 0)}%`;
 
-        if (s.spotted) {
+        if (s.reconnecting) {
+          d.badge.className = 'badge badge-ended';
+          d.badge.textContent = `RECONNECTING (#${s.reconnect_attempt || 1})`;
+          d.badge.style.display = 'inline-block';
+        } else if (s.spotted) {
           d.badge.className = 'badge badge-spotted';
           d.badge.textContent = 'SPOTTED';
           d.badge.style.display = 'inline-block';
@@ -3688,7 +3692,11 @@
         document.getElementById(`feedSpd${i}`).textContent = s.speed || '10x';
 
         const fBadge = document.getElementById(`feedBadge${i}`);
-        if (s.spotted) {
+        if (s.reconnecting) {
+          fBadge.className = 'badge badge-ended';
+          fBadge.textContent = `RECONNECTING (#${s.reconnect_attempt || 1})`;
+          fBadge.style.display = 'inline-block';
+        } else if (s.spotted) {
           fBadge.className = 'badge badge-spotted';
           fBadge.textContent = 'SPOTTED';
           fBadge.style.display = 'inline-block';

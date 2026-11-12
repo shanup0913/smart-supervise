@@ -99,4 +99,13 @@ SmartSupervise/
 | Feature Extraction | MobileNetV3 (PyTorch) + 3D LAB Histograms |
 | Video Decoding | OpenCV 4.x (Optimized Thread Pool) |
 | Desktop GUI | CustomTkinter (Modular Dark Theme) |
+| Web Console | Starlette + Uvicorn (`web_app.py` / `webapp/`) |
 | Concurrency | Python `concurrent.futures` Multi-threading |
+
+---
+
+## Web Hosting & Password Control
+
+- **24/7 Cloud Hosting (Hugging Face Docker Space):** Runs from [Dockerfile](Dockerfile) on port `7860` so the link stays live even when your laptop is off.
+- **Control the Passcode Anytime:** Set the `SMARTSUPERVISE_ACCESS_CODE` Secret in your Hugging Face Space **Settings → Variables and secrets** (or remove it to allow public access).
+- **Local Public Tunnel:** Run `python launch_public.py --passcode YOUR_PASSWORD` to share from your own machine with your custom passcode.

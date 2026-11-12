@@ -104,22 +104,28 @@ async def api_auth_login(request: Request):
         request.url.scheme == "https"
         or request.headers.get("x-forwarded-proto", "").lower() == "https"
     )
+    cookie_samesite = "none" if (os.environ.get("SPACE_ID") and is_https) else "lax"
     resp = JSONResponse({"ok": True, "authenticated": True})
     resp.set_cookie(
         key=_COOKIE_NAME,
         value=sign_session_token(),
         max_age=_SESSION_TTL_SEC,
         httponly=True,
-        samesite="lax",
+        samesite=cookie_samesite,
         secure=is_https,
         path="/",
     )
     return resp
 
 
-async def api_auth_logout(_request: Request):
+async def api_auth_logout(request: Request):
+    is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").lower() == "https"
+    )
+    cookie_samesite = "none" if (os.environ.get("SPACE_ID") and is_https) else "lax"
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(key=_COOKIE_NAME, path="/")
+    resp.delete_cookie(key=_COOKIE_NAME, path="/", samesite=cookie_samesite, secure=is_https)
     return resp
 
 

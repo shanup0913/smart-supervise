@@ -94,8 +94,19 @@ def wait_local_ready(port, proc=None, timeout_sec=60):
     raise RuntimeError(f"web_app.py failed to start on port {port} within {timeout_sec}s")
 
 
+def _parse_passcode_arg(argv):
+    for i, arg in enumerate(argv):
+        if arg.startswith("--passcode="):
+            return arg.split("=", 1)[1].strip()
+        if arg in ("--passcode", "-p") and i + 1 < len(argv):
+            return argv[i + 1].strip()
+    return ""
+
+
 def main():
-    no_auth = "--no-auth" in sys.argv[1:]
+    args = sys.argv[1:]
+    no_auth = "--no-auth" in args
+    cli_passcode = _parse_passcode_arg(args)
     cf_bin = ensure_cloudflared()
     port = choose_listen_port(PORT, explicit=("PORT" in os.environ))
     env = os.environ.copy()
@@ -103,7 +114,7 @@ def main():
 
     access_code = ""
     if not no_auth:
-        access_code = env.get("SMARTSUPERVISE_ACCESS_CODE", "").strip()
+        access_code = cli_passcode or env.get("SMARTSUPERVISE_ACCESS_CODE", "").strip()
         if not access_code:
             access_code = secrets.token_urlsafe(6)
         env["SMARTSUPERVISE_ACCESS_CODE"] = access_code

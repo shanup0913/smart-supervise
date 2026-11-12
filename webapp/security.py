@@ -297,6 +297,12 @@ class SecurityAndAuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"ok": False, "error": "Authentication required."}, status_code=401)
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        if os.environ.get("SPACE_ID"):
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "frame-ancestors 'self' https://huggingface.co https://*.hf.space",
+            )
+        else:
+            response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response

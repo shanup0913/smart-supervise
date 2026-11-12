@@ -77,6 +77,8 @@ class CCTVScanner:
 
     def add_person_photo(self, photo_path_or_crop, angle_label=None):
         """Adds an additional angle/pose to the target person's gallery."""
+        with self._lock:
+            self.tracking_mode = "person_photo"
         return self.matcher.add_target_photo(photo_path_or_crop, angle_label=angle_label)
 
     def extract_360_angles_from_video(self, video_path, target_name="Target Person", max_angles=4):

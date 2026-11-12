@@ -1421,7 +1421,7 @@ class VideoEngine:
 
             cam_time_str = self._format_hms(pos / max(1.0, slot["fps"]))
             loc_name = slot["location"].strip() or f"Camera {slot['id'] + 1}"
-            should_ai = self._should_run_motion_ai(slot, frame, min_pixels=35, heartbeat_sec=2.0)
+            should_ai = self._should_run_motion_ai(slot, frame, min_pixels=10, heartbeat_sec=0.5)
             return {
                 "slot": slot,
                 "frame": frame,
@@ -1521,14 +1521,16 @@ class VideoEngine:
                             if spotted and match_info:
                                 self._record_slot_sighting(slot, g["loc_name"], g["cam_time_str"], match_info)
                         else:
-                            # Fast path for static frames skipped by motion gate
-                            if preview is frame:
-                                preview = frame.copy()
+                            # Fast path for static frames skipped by motion gate: keep cached detections drawn cleanly
                             with self._lock:
-                                slot["spotted"] = False
-                                slot["cached_detections"] = []
-                                slot["cached_spotted"] = False
-                                slot["current_frame"] = preview
+                                cached_dets = list(slot["cached_detections"])
+                                cached_spotted = slot["cached_spotted"]
+                            annotated = self.scanner.draw_overlays(
+                                preview, cached_dets, cached_spotted, camera_name=g["loc_name"], video_time_str=g["cam_time_str"]
+                            )
+                            with self._lock:
+                                slot["spotted"] = cached_spotted
+                                slot["current_frame"] = annotated
                                 slot["frame_seq"] = slot.get("frame_seq", 0) + 1
 
                     pub_targets = [g for g in grabbed if not g.get("ended") and g.get("frame") is not None]

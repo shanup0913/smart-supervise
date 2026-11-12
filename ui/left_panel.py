@@ -864,16 +864,25 @@ class LeftPanel(ctk.CTkFrame):
         self.update_idletasks()
 
         def _bg_upload():
+            loaded = 0
+            failed = 0
             for path in paths:
-                img_bgr = cv2.imread(path)
+                img_bgr = self.app.scanner.matcher._load_image_bgr(path)
                 if img_bgr is not None:
                     self.app.scanner.add_person_photo(img_bgr)
+                    loaded += 1
+                else:
+                    failed += 1
 
             def _finish():
+                if getattr(self.app, "_is_closing", False):
+                    return
                 self.app.scanner.last_sighting["found"] = False
                 self.app.scanner.last_sighting["target_name"] = name
                 self.app.scanner.sightings_history.clear()
                 self._refresh_gallery_display()
+                if failed > 0 and loaded == 0:
+                    messagebox.showerror("Image Error", "Could not read the selected target photo file.")
             self.app.after(0, _finish)
 
         threading.Thread(target=_bg_upload, daemon=True).start()
@@ -885,7 +894,7 @@ class LeftPanel(ctk.CTkFrame):
         )
         if not path:
             return
-        img_bgr = cv2.imread(path)
+        img_bgr = self.app.scanner.matcher._load_image_bgr(path)
         if img_bgr is not None:
             self.app.set_status("Analyzing pose angle...", color=ACCENT_AMBER)
             self.update_idletasks()
@@ -895,6 +904,8 @@ class LeftPanel(ctk.CTkFrame):
                 self.app.after(0, self._refresh_gallery_display)
 
             threading.Thread(target=_bg_add, daemon=True).start()
+        else:
+            messagebox.showerror("Image Error", "Could not read the selected photo file.")
 
     def _upload_360_video(self):
         path = filedialog.askopenfilename(
@@ -1018,6 +1029,8 @@ class LeftPanel(ctk.CTkFrame):
                 messagebox.showwarning("No Target", "Please upload at least one target photo first!")
                 return
             name = self.target_name_var.get().strip() or "Target Person"
+            with self.app.scanner._lock:
+                self.app.scanner.tracking_mode = "person_photo"
             self.app.scanner.matcher.target_name = name
             self.app.tracker.set_target(name)
         else:

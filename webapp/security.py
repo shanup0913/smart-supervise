@@ -299,7 +299,14 @@ def install_windows_proactor_filter(loop):
 class SecurityAndAuthMiddleware(BaseHTTPMiddleware):
     """Protect all private endpoints behind session auth and attach standard security headers."""
 
-    _PUBLIC_HTTP_PATHS = {"/", "/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
+    _PUBLIC_HTTP_PATHS = {
+        "/",
+        "/favicon.ico",
+        "/api/health",
+        "/api/auth/status",
+        "/api/auth/login",
+        "/api/auth/logout",
+    }
 
     async def dispatch(self, request: Request, call_next):
         if auth_enabled() and request.url.path not in self._PUBLIC_HTTP_PATHS:

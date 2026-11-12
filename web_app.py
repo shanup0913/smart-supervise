@@ -11,6 +11,7 @@ import socket
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
 # Prevent OpenCV internal thread thrashing alongside VideoEngine workers
 cv2.setNumThreads(1)
@@ -32,7 +33,14 @@ routes = [*core_routes, *stream_routes]
 app = Starlette(
     routes=routes,
     lifespan=lifespan,
-    middleware=[Middleware(SecurityAndAuthMiddleware)],
+    middleware=[
+        Middleware(
+            GZipMiddleware,
+            minimum_size=1024,
+            exclude_content_types=DEFAULT_EXCLUDED_CONTENT_TYPES + ("multipart/*",),
+        ),
+        Middleware(SecurityAndAuthMiddleware),
+    ],
 )
 
 

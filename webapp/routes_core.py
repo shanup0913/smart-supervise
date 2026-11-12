@@ -63,6 +63,17 @@ async def index_page(_request: Request):
         return HTMLResponse(f.read())
 
 
+async def favicon_svg(_request: Request):
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<rect width="64" height="64" rx="14" fill="#0f172a"/>'
+        '<circle cx="32" cy="32" r="20" fill="none" stroke="#10b981" stroke-width="4"/>'
+        '<circle cx="32" cy="32" r="7" fill="#10b981"/>'
+        '</svg>'
+    )
+    return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+
+
 async def api_health(request: Request):
     if auth_enabled() and not is_authenticated(request):
         return JSONResponse({"ok": True})
@@ -527,6 +538,7 @@ async def api_fs_list(request: Request):
 
 core_routes = [
     Route("/", index_page, methods=["GET"]),
+    Route("/favicon.ico", favicon_svg, methods=["GET"]),
     Route("/api/health", api_health, methods=["GET"]),
     Route("/api/auth/status", api_auth_status, methods=["GET"]),
     Route("/api/auth/login", api_auth_login, methods=["POST"]),

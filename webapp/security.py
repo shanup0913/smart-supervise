@@ -166,9 +166,19 @@ def is_safe_media_path(raw_path: str, allowed_exts=None):
     return None
 
 
+def is_cloud_container() -> bool:
+    """True when deployed inside a cloud container runtime (Hugging Face Spaces or Railway)."""
+    return bool(
+        os.environ.get("SPACE_ID")
+        or os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("RAILWAY_PROJECT_ID")
+        or os.environ.get("RAILWAY_SERVICE_ID")
+    )
+
+
 def host_fs_allowed() -> bool:
     """True unless running in container mode or explicitly disabled by env."""
-    if os.environ.get("SPACE_ID"):
+    if is_cloud_container():
         return False
     return os.environ.get("SMARTSUPERVISE_ALLOW_HOST_FS", "1").strip() != "0"
 

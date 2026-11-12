@@ -32,6 +32,7 @@ from webapp.security import (
     client_ip,
     get_access_code,
     is_authenticated,
+    is_cloud_container,
     is_under_root,
     record_login_failure,
     save_upload_file,
@@ -440,7 +441,7 @@ async def api_map_blueprint_get(_request: Request):
 
 
 async def api_fs_list(request: Request):
-    if os.environ.get("SPACE_ID"):
+    if is_cloud_container():
         return JSONResponse(
             {
                 "ok": True,
